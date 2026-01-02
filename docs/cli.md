@@ -86,6 +86,7 @@ This is the command `ctx` uses. It:
 2. Writes `source_match.json` into the output directory
 3. Generates `index.html` + `page-*.html`
 4. Optionally copies the source JSONL file into the output dir (`--json`)
+5. Optionally appends a changelog entry (`--changelog`, see `docs/changelog.md`)
 
 Example:
 
@@ -98,8 +99,15 @@ ai-code-sessions export-latest \
   --end 2026-01-02T09:16:57.576Z \
   -o ./.codex/sessions/2026-01-02-0000_My_Session \
   --label "My Session" \
-  --json
+  --json \
+  --changelog
 ```
+
+Changelog options:
+
+- `--changelog/--no-changelog`: enable/disable changelog generation (default can be set via `CTX_CHANGELOG=1` or `AI_CODE_SESSIONS_CHANGELOG=1`)
+- `--changelog-actor`: override `actor` (and therefore the output file under `.changelog/<actor>/entries.jsonl`)
+- `--changelog-model`: override Codex model used for changelog generation
 
 ### Claude-only commands (inherited)
 
@@ -108,6 +116,15 @@ These commands are inherited from Simon’s tool and are still present:
 - `local` (default) — interactive picker from `~/.claude/projects`
 - `web` — fetch sessions via the Claude API (requires credentials)
 - `all` — build a browsable archive for all local Claude sessions
+
+### `changelog backfill`
+
+Generate `.changelog/<actor>/entries.jsonl` entries from existing `ctx` output directories:
+
+```bash
+ai-code-sessions changelog backfill --project-root "$(git rev-parse --show-toplevel)" --actor "your-github-username"
+ai-code-sessions changelog backfill --sessions-dir ./.codex/sessions --actor "your-github-username"
+```
 
 ## What the HTML includes
 

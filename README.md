@@ -38,6 +38,22 @@ Each directory includes:
 - `source_match.json` showing how the native JSONL source was selected
 - a copy of the original native JSONL log file for archival
 
+## Optional: changelog entries
+
+`ai-code-sessions` can append a concise, engineering-oriented entry after export.
+
+Enable it for `ctx` runs:
+
+```bash
+export CTX_ACTOR="your-github-username"
+export CTX_CHANGELOG=1
+```
+
+It writes to the project repo:
+
+- `.changelog/<actor>/entries.jsonl` (successes)
+- `.changelog/<actor>/failures.jsonl` (non-fatal failures)
+
 ## Run the CLI directly
 
 This repo exposes a CLI via `uv` (no global install required):
@@ -65,7 +81,8 @@ uv run --project . ai-code-sessions export-latest \
   --end 2026-01-02T09:16:57.576Z \
   -o ./out \
   --label "My label" \
-  --json
+  --json \
+  --changelog
 ```
 
 ## Docs

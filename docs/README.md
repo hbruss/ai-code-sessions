@@ -28,6 +28,7 @@ This documentation covers:
 - `docs/source-matching.md` — how matching works (important for concurrency)
 - `docs/troubleshooting.md` — what to do when export fails
 - `docs/privacy.md` — what’s captured and how to treat it safely
+- `docs/changelog.md` — optional changelog generation from sessions
 - `docs/development.md` — tests, local dev, and architecture notes
 
 ## Reference implementation

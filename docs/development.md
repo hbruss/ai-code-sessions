@@ -27,6 +27,15 @@ uv run --project . ai-code-sessions --help
 uv run --project . ai-code-sessions json --help
 ```
 
+## Changelog generation (optional)
+
+Changelog generation uses the local `codex` CLI in non-interactive mode to produce a concise entry and appends it to `.changelog/<actor>/entries.jsonl` in the target project repo.
+
+Notes:
+
+- The export step is always the source of truth; changelog generation is best-effort and failures are recorded in `.changelog/<actor>/failures.jsonl`.
+- CI does not run Codex, so changelog behavior is not covered by automated tests.
+
 ## Adding support for another tool
 
 High-level checklist:

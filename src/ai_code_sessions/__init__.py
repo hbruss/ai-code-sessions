@@ -2,6 +2,7 @@
 
 import json
 import html
+import hashlib
 import os
 import platform
 import re
@@ -550,6 +551,18 @@ def _infer_is_error_from_exec_output(output_text: str) -> bool:
         return False
 
 
+def _infer_exit_code_from_exec_output(output_text: str) -> int | None:
+    if not isinstance(output_text, str):
+        return None
+    m = re.search(r"Process exited with code (\\d+)", output_text)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
 def _codex_convert_message_content(content):
     """Convert Codex message content blocks to Claude-like content blocks."""
     blocks = []
@@ -691,6 +704,964 @@ def _parse_iso8601(value: str):
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
     except ValueError:
+        return None
+
+
+CHANGELOG_ENTRY_SCHEMA_VERSION = 1
+
+_CHANGELOG_ENTRY_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema_version",
+        "run_id",
+        "created_at",
+        "tool",
+        "actor",
+        "project",
+        "project_root",
+        "label",
+        "start",
+        "end",
+        "session_dir",
+        "continuation_of_run_id",
+        "transcript",
+        "summary",
+        "bullets",
+        "tags",
+        "touched_files",
+        "tests",
+        "commits",
+    ],
+    "properties": {
+        "schema_version": {"type": "integer", "const": CHANGELOG_ENTRY_SCHEMA_VERSION},
+        "run_id": {"type": "string", "minLength": 1},
+        "created_at": {"type": "string", "minLength": 1},
+        "tool": {"type": "string", "enum": ["codex", "claude", "unknown"]},
+        "actor": {"type": "string", "minLength": 1},
+        "project": {"type": "string", "minLength": 1},
+        "project_root": {"type": "string", "minLength": 1},
+        "label": {"type": ["string", "null"]},
+        "start": {"type": "string", "minLength": 1},
+        "end": {"type": "string", "minLength": 1},
+        "session_dir": {"type": "string", "minLength": 1},
+        "continuation_of_run_id": {"type": ["string", "null"]},
+        "transcript": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["output_dir", "index_html", "source_jsonl", "source_match_json"],
+            "properties": {
+                "output_dir": {"type": "string", "minLength": 1},
+                "index_html": {"type": "string", "minLength": 1},
+                "source_jsonl": {"type": "string", "minLength": 1},
+                "source_match_json": {"type": "string", "minLength": 1},
+            },
+        },
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "bullets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {"type": "string", "minLength": 1, "maxLength": 240},
+        },
+        "tags": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 24,
+            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+        },
+        "touched_files": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["created", "modified", "deleted", "moved"],
+            "properties": {
+                "created": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "modified": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "deleted": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "moved": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["from", "to"],
+                        "properties": {
+                            "from": {"type": "string", "minLength": 1},
+                            "to": {"type": "string", "minLength": 1},
+                        },
+                    },
+                },
+            },
+        },
+        "tests": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 50,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["cmd", "result"],
+                "properties": {
+                    "cmd": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "result": {"type": "string", "enum": ["pass", "fail", "unknown"]},
+                },
+            },
+        },
+        "commits": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 50,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["hash", "message"],
+                "properties": {
+                    "hash": {"type": "string", "minLength": 4, "maxLength": 64},
+                    "message": {"type": "string", "minLength": 1, "maxLength": 300},
+                },
+            },
+        },
+        "notes": {"type": ["string", "null"], "maxLength": 800},
+    },
+}
+
+_CHANGELOG_CODEX_OUTPUT_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "bullets", "tags"],
+    "properties": {
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "bullets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {"type": "string", "minLength": 1, "maxLength": 240},
+        },
+        "tags": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 24,
+            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+        },
+        "notes": {"type": ["string", "null"], "maxLength": 800},
+    },
+}
+
+
+def _now_iso8601() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _write_json_schema_tempfile(schema: dict) -> Path:
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".schema.json", delete=False
+    )
+    try:
+        tmp.write(json.dumps(schema, indent=2, ensure_ascii=False))
+        tmp.flush()
+        return Path(tmp.name)
+    finally:
+        tmp.close()
+
+
+def _compute_run_id(*, tool: str, start: str, end: str, session_dir: Path, source_jsonl: Path) -> str:
+    payload = {
+        "tool": tool or "unknown",
+        "start": start or "",
+        "end": end or "",
+        "session_dir": str(session_dir),
+        "source_jsonl": str(source_jsonl),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return digest[:16]
+
+
+def _append_jsonl(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False))
+        f.write("\n")
+
+
+def _load_existing_run_ids(entries_path: Path) -> set[str]:
+    run_ids: set[str] = set()
+    if not entries_path.exists():
+        return run_ids
+    try:
+        with open(entries_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                run_id = obj.get("run_id")
+                if isinstance(run_id, str) and run_id:
+                    run_ids.add(run_id)
+    except OSError:
+        return run_ids
+    return run_ids
+
+
+def _detect_actor(*, project_root: Path) -> str:
+    for key in (
+        "CHANGELOG_ACTOR",
+        "CTX_ACTOR",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_NAME",
+        "USER",
+    ):
+        val = os.environ.get(key)
+        if val:
+            return val.strip()
+
+    # Fall back to git config values if available.
+    try:
+        email = (
+            subprocess.check_output(
+                ["git", "config", "--get", "user.email"],
+                cwd=str(project_root),
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            .strip()
+        )
+        if email:
+            return email
+    except Exception:
+        pass
+
+    try:
+        name = (
+            subprocess.check_output(
+                ["git", "config", "--get", "user.name"],
+                cwd=str(project_root),
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            .strip()
+        )
+        if name:
+            return name
+    except Exception:
+        pass
+
+    return "unknown"
+
+
+def _env_truthy(name: str) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return False
+    return val.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _slugify_actor(actor: str) -> str:
+    if not isinstance(actor, str):
+        return "unknown"
+    value = actor.strip().lower()
+    if not value:
+        return "unknown"
+    value = value.replace("@", "-at-")
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = value.strip("-._")
+    return value or "unknown"
+
+
+def _changelog_paths(*, changelog_dir: Path, actor: str) -> tuple[Path, Path]:
+    actor_slug = _slugify_actor(actor)
+    base = changelog_dir / actor_slug
+    return base / "entries.jsonl", base / "failures.jsonl"
+
+
+def _parse_apply_patch_file_ops(patch_text: str) -> dict:
+    """Extract file operations from an apply_patch payload."""
+    result = {
+        "created": set(),
+        "modified": set(),
+        "deleted": set(),
+        "moved": [],  # list of {from,to}
+    }
+    if not isinstance(patch_text, str) or not patch_text.strip():
+        return result
+
+    current_path = None
+    for raw in patch_text.splitlines():
+        line = raw.strip()
+        if line.startswith("*** Add File: "):
+            current_path = line[len("*** Add File: ") :].strip()
+            if current_path:
+                result["created"].add(current_path)
+            continue
+        if line.startswith("*** Update File: "):
+            current_path = line[len("*** Update File: ") :].strip()
+            if current_path:
+                result["modified"].add(current_path)
+            continue
+        if line.startswith("*** Delete File: "):
+            current_path = line[len("*** Delete File: ") :].strip()
+            if current_path:
+                result["deleted"].add(current_path)
+            continue
+        if line.startswith("*** Move to: "):
+            dest = line[len("*** Move to: ") :].strip()
+            if current_path and dest:
+                result["moved"].append({"from": current_path, "to": dest})
+            continue
+
+    return result
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    if max_chars <= 0:
+        return ""
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3].rstrip() + "..."
+
+
+def _extract_text_blocks_from_message(message: dict) -> list[str]:
+    """Return plaintext text blocks from a normalized message dict."""
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content", "")
+    if isinstance(content, str):
+        txt = content.strip()
+        return [txt] if txt else []
+    if not isinstance(content, list):
+        return []
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        txt = block.get("text", "")
+        if isinstance(txt, str) and txt.strip():
+            texts.append(txt.strip())
+    return texts
+
+
+def _extract_tool_blocks_from_message(message: dict) -> list[dict]:
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content", "")
+    if not isinstance(content, list):
+        return []
+    blocks: list[dict] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") in ("tool_use", "tool_result"):
+            blocks.append(block)
+    return blocks
+
+
+def _tool_name_is_command(tool_name: str) -> bool:
+    if not isinstance(tool_name, str):
+        return False
+    if tool_name in ("bash", "shell", "terminal"):
+        return True
+    return tool_name.endswith(".exec_command") or tool_name.endswith("exec_command")
+
+
+def _tool_name_is_apply_patch(tool_name: str) -> bool:
+    if not isinstance(tool_name, str):
+        return False
+    return tool_name.endswith(".apply_patch") or tool_name.endswith("apply_patch")
+
+
+def _extract_patch_text(tool_input) -> str | None:
+    if isinstance(tool_input, str):
+        return tool_input
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("patch", "arguments"):
+        val = tool_input.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
+def _extract_path_from_tool_input(tool_input) -> str | None:
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("path", "file_path", "filepath", "filename"):
+        val = tool_input.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _extract_cmd_from_tool_input(tool_input) -> str | None:
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("cmd", "command"):
+        val = tool_input.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _summarize_tool_input(tool_input, *, max_chars: int = 4000):
+    if isinstance(tool_input, str):
+        return _truncate_text(tool_input, max_chars)
+    if isinstance(tool_input, dict):
+        summary = {}
+        for k, v in tool_input.items():
+            if isinstance(v, str):
+                summary[k] = _truncate_text(v, max_chars)
+            elif isinstance(v, (dict, list)):
+                summary[k] = _truncate_text(json.dumps(v, ensure_ascii=False), max_chars)
+            else:
+                summary[k] = v
+        return summary
+    if isinstance(tool_input, list):
+        return _truncate_text(json.dumps(tool_input, ensure_ascii=False), max_chars)
+    return tool_input
+
+
+def _looks_like_test_command(cmd: str) -> bool:
+    if not isinstance(cmd, str):
+        return False
+    cmd = cmd.strip()
+    if not cmd:
+        return False
+    patterns = [
+        r"\\bpytest\\b",
+        r"\\buv\\s+run\\b.*\\bpytest\\b",
+        r"\\bnpm\\s+test\\b",
+        r"\\byarn\\s+test\\b",
+        r"\\bpnpm\\s+test\\b",
+        r"\\bgo\\s+test\\b",
+        r"\\bmvn\\b.*\\btest\\b",
+        r"\\bgradle\\b.*\\btest\\b",
+        r"\\brake\\s+test\\b",
+    ]
+    return any(re.search(pat, cmd) for pat in patterns)
+
+
+def _extract_commits_from_text(text: str) -> list[dict]:
+    commits: list[dict] = []
+    if not isinstance(text, str) or not text:
+        return commits
+    for m in COMMIT_PATTERN.finditer(text):
+        commits.append({"hash": m.group(1), "message": m.group(2)})
+    return commits
+
+
+def _build_changelog_digest(
+    *,
+    source_jsonl: Path,
+    start: str,
+    end: str,
+    prior_prompts: int = 3,
+) -> dict:
+    start_dt = _parse_iso8601(start)
+    end_dt = _parse_iso8601(end)
+    if start_dt is None or end_dt is None:
+        raise click.ClickException("Invalid start/end timestamps for changelog digest")
+
+    session_data = parse_session_file(source_jsonl)
+    loglines = session_data.get("loglines", [])
+    source_format = session_data.get("source_format") or "unknown"
+
+    before: list[dict] = []
+    within: list[dict] = []
+
+    for entry in loglines:
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("timestamp", "")
+        dt = _parse_iso8601(ts)
+        if dt is None:
+            continue
+        if dt < start_dt:
+            before.append(entry)
+        elif dt > end_dt:
+            continue
+        else:
+            within.append(entry)
+
+    prior_user_prompts: list[dict] = []
+    for entry in before:
+        if entry.get("type") != "user":
+            continue
+        msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        content = msg.get("content", "")
+        text = extract_text_from_content(content)
+        if not text:
+            continue
+        if text.startswith("Stop hook feedback:"):
+            continue
+        prior_user_prompts.append(
+            {
+                "timestamp": entry.get("timestamp", ""),
+                "text": _truncate_text(text, 2000),
+            }
+        )
+    if prior_prompts > 0:
+        prior_user_prompts = prior_user_prompts[-prior_prompts:]
+
+    delta_user_prompts: list[dict] = []
+    delta_assistant_text: list[dict] = []
+    tool_calls: list[dict] = []
+    tool_errors: list[dict] = []
+    commits: list[dict] = []
+    tests: list[dict] = []
+
+    touched_created: set[str] = set()
+    touched_modified: set[str] = set()
+    touched_deleted: set[str] = set()
+    touched_moved: list[dict] = []
+
+    pending_tool_call = None
+
+    for entry in within:
+        entry_type = entry.get("type")
+        ts = entry.get("timestamp", "")
+        msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+
+        if entry_type == "user":
+            content = msg.get("content", "")
+            text = extract_text_from_content(content)
+            if text and not text.startswith("Stop hook feedback:"):
+                delta_user_prompts.append({"timestamp": ts, "text": _truncate_text(text, 2000)})
+            continue
+
+        if entry_type != "assistant":
+            continue
+
+        for txt in _extract_text_blocks_from_message(msg):
+            commits.extend(_extract_commits_from_text(txt))
+            delta_assistant_text.append({"timestamp": ts, "text": _truncate_text(txt, 2000)})
+
+        for block in _extract_tool_blocks_from_message(msg):
+            btype = block.get("type")
+            if btype == "tool_use":
+                tool_name = block.get("name") or "unknown"
+                tool_input = block.get("input")
+                input_summary = _summarize_tool_input(tool_input)
+                if _tool_name_is_apply_patch(tool_name) and isinstance(input_summary, dict):
+                    for k in ("patch", "arguments"):
+                        if k in input_summary:
+                            input_summary[k] = "[omitted]"
+                call = {
+                    "timestamp": ts,
+                    "tool": tool_name,
+                    "input": input_summary,
+                    "result": None,
+                }
+
+                if _tool_name_is_apply_patch(tool_name):
+                    patch_text = _extract_patch_text(tool_input)
+                    if patch_text:
+                        file_ops = _parse_apply_patch_file_ops(patch_text)
+                        touched_created |= set(file_ops["created"])
+                        touched_modified |= set(file_ops["modified"])
+                        touched_deleted |= set(file_ops["deleted"])
+                        touched_moved.extend(file_ops["moved"])
+                        call["patch_snippet"] = _truncate_text(patch_text, 12000)
+
+                path_hint = _extract_path_from_tool_input(tool_input)
+                if path_hint:
+                    touched_modified.add(path_hint)
+                    call["path_hint"] = path_hint
+
+                cmd_hint = None
+                if _tool_name_is_command(tool_name):
+                    cmd_hint = _extract_cmd_from_tool_input(tool_input)
+                    if cmd_hint:
+                        call["cmd"] = _truncate_text(cmd_hint, 500)
+                        if _looks_like_test_command(cmd_hint):
+                            call["is_test"] = True
+                tool_calls.append(call)
+                pending_tool_call = call
+                continue
+
+            if btype == "tool_result":
+                content = block.get("content", "")
+                if isinstance(content, (dict, list)):
+                    content_text = json.dumps(content, ensure_ascii=False)
+                else:
+                    content_text = str(content)
+
+                commits.extend(_extract_commits_from_text(content_text))
+
+                is_error = block.get("is_error")
+                if is_error is None:
+                    is_error = _infer_is_error_from_exec_output(content_text)
+
+                result_obj = {
+                    "timestamp": ts,
+                    "is_error": bool(is_error),
+                    "content_snippet": _truncate_text(content_text, 4000),
+                }
+                if pending_tool_call is not None and pending_tool_call.get("result") is None:
+                    pending_tool_call["result"] = result_obj
+                    if pending_tool_call.get("is_test") and pending_tool_call.get("cmd"):
+                        exit_code = _infer_exit_code_from_exec_output(content_text)
+                        if block.get("is_error") is True:
+                            test_result = "fail"
+                        elif exit_code == 0:
+                            test_result = "pass"
+                        elif exit_code is None:
+                            test_result = "unknown"
+                        else:
+                            test_result = "fail"
+                        tests.append(
+                            {
+                                "cmd": pending_tool_call["cmd"],
+                                "result": test_result,
+                            }
+                        )
+                if is_error:
+                    tool_errors.append(result_obj)
+                continue
+
+    touched_files = {
+        "created": sorted(touched_created),
+        "modified": sorted(touched_modified),
+        "deleted": sorted(touched_deleted),
+        "moved": touched_moved,
+    }
+
+    # Keep assistant text short: include only the last few snippets.
+    delta_assistant_text = delta_assistant_text[-8:]
+
+    return {
+        "schema_version": 1,
+        "source_format": source_format,
+        "window": {"start": start, "end": end},
+        "context": {"prior_user_prompts": prior_user_prompts},
+        "delta": {
+            "user_prompts": delta_user_prompts,
+            "assistant_text": delta_assistant_text,
+            "tool_calls": tool_calls,
+            "tool_errors": tool_errors,
+            "touched_files": touched_files,
+            "tests": tests,
+            "commits": commits[:50],
+        },
+    }
+
+
+def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        raise click.ClickException("codex CLI not found on PATH (required for changelog generation)")
+
+    out_file = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".codex-last-message.json", delete=False
+    )
+    out_path = Path(out_file.name)
+    out_file.close()
+
+    cmd = [
+        codex_bin,
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--output-schema",
+        str(schema_path),
+        "--output-last-message",
+        str(out_path),
+        "-",
+    ]
+    if model:
+        cmd[2:2] = ["-m", model]
+    if cd:
+        cmd[2:2] = ["-C", str(cd)]
+
+    proc = subprocess.run(
+        cmd,
+        input=prompt,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise click.ClickException(
+            f"codex exec failed (exit {proc.returncode}). stderr: {proc.stderr.strip()}"
+        )
+
+    try:
+        raw = out_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        raise click.ClickException(f"Failed reading codex output: {e}")
+
+    if not raw:
+        raise click.ClickException("codex output was empty")
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Some versions may wrap JSON in markdown; attempt a minimal salvage.
+        m = re.search(r"\\{.*\\}", raw, flags=re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+        raise click.ClickException("codex output was not valid JSON")
+
+
+def _build_codex_changelog_prompt(*, digest: dict) -> str:
+    return (
+        "You are generating an engineering changelog entry for a single terminal-based coding session.\n"
+        "\n"
+        "Requirements:\n"
+        "- Focus ONLY on work done within the provided time window (the 'delta').\n"
+        "- Do NOT quote user prompts verbatim; paraphrase context into searchable phrasing.\n"
+        "- Do NOT include secrets, tokens, API keys, or credentials. If unsure, write [REDACTED].\n"
+        "- Be concrete: mention what changed and why, and reference files by path when known.\n"
+        "- Keep it concise.\n"
+        "\n"
+        "Return JSON matching the output schema.\n"
+        "\n"
+        "DIGEST_JSON_START\n"
+        f"{json.dumps(digest, ensure_ascii=False, indent=2)}\n"
+        "DIGEST_JSON_END\n"
+    )
+
+
+def _write_changelog_failure(
+    *,
+    changelog_dir: Path,
+    run_id: str,
+    tool: str,
+    actor: str,
+    project: str,
+    project_root: Path,
+    session_dir: Path,
+    start: str,
+    end: str,
+    error: str,
+    source_jsonl: Path | None,
+    source_match_json: Path | None,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "created_at": _now_iso8601(),
+        "tool": tool or "unknown",
+        "actor": actor,
+        "project": project,
+        "project_root": str(project_root),
+        "session_dir": str(session_dir),
+        "start": start,
+        "end": end,
+        "source_jsonl": str(source_jsonl) if source_jsonl else None,
+        "source_match_json": str(source_match_json) if source_match_json else None,
+        "error": _truncate_text(error, 2000),
+    }
+    _, failures_path = _changelog_paths(changelog_dir=changelog_dir, actor=actor)
+    _append_jsonl(failures_path, payload)
+
+
+def _generate_and_append_changelog_entry(
+    *,
+    tool: str,
+    label: str | None,
+    cwd: str,
+    project_root: Path,
+    session_dir: Path,
+    start: str,
+    end: str,
+    source_jsonl: Path,
+    source_match_json: Path,
+    prior_prompts: int = 3,
+    actor: str | None = None,
+    codex_model: str | None = None,
+    continuation_of_run_id: str | None = None,
+) -> tuple[bool, str | None]:
+    changelog_dir = project_root / ".changelog"
+
+    project = project_root.name or str(project_root)
+    actor_value = actor or _detect_actor(project_root=project_root)
+    actor_slug = _slugify_actor(actor_value)
+    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
+    session_dir_abs = session_dir.resolve()
+    run_id = _compute_run_id(
+        tool=tool,
+        start=start,
+        end=end,
+        session_dir=session_dir_abs,
+        source_jsonl=source_jsonl,
+    )
+
+    existing = (
+        _load_existing_run_ids(entries_path)
+        | _load_existing_run_ids(changelog_dir / "entries.jsonl")
+        | _load_existing_run_ids(changelog_dir / "actors" / actor_slug / "entries.jsonl")
+    )
+    if run_id in existing:
+        return False, run_id
+
+    try:
+        digest = _build_changelog_digest(
+            source_jsonl=source_jsonl,
+            start=start,
+            end=end,
+            prior_prompts=prior_prompts,
+        )
+
+        prompt = _build_codex_changelog_prompt(digest=digest)
+        schema_path = _write_json_schema_tempfile(_CHANGELOG_CODEX_OUTPUT_SCHEMA)
+        try:
+            codex_out = _run_codex_changelog_evaluator(
+                prompt=prompt,
+                schema_path=schema_path,
+                cd=project_root,
+                model=codex_model,
+            )
+        finally:
+            try:
+                schema_path.unlink()
+            except OSError:
+                pass
+
+        summary = codex_out.get("summary")
+        bullets = codex_out.get("bullets")
+        tags = codex_out.get("tags")
+        notes = codex_out.get("notes")
+
+        if not isinstance(summary, str) or not summary.strip():
+            raise click.ClickException("codex output missing summary")
+        if not isinstance(bullets, list) or not bullets:
+            raise click.ClickException("codex output missing bullets")
+        if not isinstance(tags, list):
+            tags = []
+
+        entry = {
+            "schema_version": CHANGELOG_ENTRY_SCHEMA_VERSION,
+            "run_id": run_id,
+            "created_at": _now_iso8601(),
+            "tool": tool or "unknown",
+            "actor": actor_value,
+            "project": project,
+            "project_root": str(project_root),
+            "label": label,
+            "start": start,
+            "end": end,
+            "session_dir": str(session_dir_abs),
+            "continuation_of_run_id": continuation_of_run_id,
+            "transcript": {
+                "output_dir": str(session_dir_abs),
+                "index_html": str((session_dir_abs / "index.html").resolve()),
+                "source_jsonl": str(source_jsonl),
+                "source_match_json": str(source_match_json),
+            },
+            "summary": summary.strip(),
+            "bullets": [str(b).strip() for b in bullets if str(b).strip()][:12],
+            "tags": [str(t).strip() for t in tags if str(t).strip()][:24],
+            "touched_files": digest.get("delta", {}).get("touched_files", {"created": [], "modified": [], "deleted": [], "moved": []}),
+            "tests": digest.get("delta", {}).get("tests", []),
+            "commits": digest.get("delta", {}).get("commits", []),
+            "notes": notes.strip() if isinstance(notes, str) and notes.strip() else None,
+        }
+
+        _append_jsonl(entries_path, entry)
+        return True, run_id
+    except Exception as e:
+        _write_changelog_failure(
+            changelog_dir=changelog_dir,
+            run_id=run_id,
+            tool=tool,
+            actor=actor_value,
+            project=project,
+            project_root=project_root,
+            session_dir=session_dir,
+            start=start,
+            end=end,
+            error=str(e),
+            source_jsonl=source_jsonl,
+            source_match_json=source_match_json,
+        )
+        return False, run_id
+
+
+def _derive_label_from_session_dir(session_dir: Path) -> str | None:
+    name = session_dir.name
+    if "_" not in name:
+        return None
+    # ctx uses <STAMP>_<SANITIZED_TITLE>[_N]
+    label_part = name.split("_", 1)[1]
+    # Drop trailing _N suffix if present.
+    m = re.match(r"^(.*?)(?:_\\d+)?$", label_part)
+    if m and m.group(1):
+        label_part = m.group(1)
+    label_part = label_part.replace("_", " ").strip()
+    return label_part or None
+
+
+def _read_jsonl_objects(path: Path) -> list[dict]:
+    objs: list[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    objs.append(obj)
+    except OSError:
+        return objs
+    return objs
+
+
+def _choose_copied_jsonl_for_session_dir(session_dir: Path) -> Path | None:
+    # Prefer the copied native JSONL (rollout-*.jsonl or <uuid>.jsonl) over legacy events.jsonl.
+    candidates = [p for p in session_dir.glob("*.jsonl") if p.is_file()]
+    if not candidates:
+        return None
+    preferred = []
+    for p in candidates:
+        if p.name == "events.jsonl":
+            continue
+        if p.name.startswith("rollout-"):
+            preferred.append(p)
+            continue
+        if re.fullmatch(r"[0-9a-f\\-]{36}\\.jsonl", p.name, flags=re.IGNORECASE):
+            preferred.append(p)
+            continue
+        preferred.append(p)
+    # Choose largest file to bias toward the real transcript.
+    preferred.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+    return preferred[0] if preferred else None
+
+
+def _git_toplevel(cwd: Path) -> Path | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(cwd),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return Path(out).resolve() if out else None
+    except Exception:
         return None
 
 
@@ -2112,10 +3083,32 @@ def find_source_cmd(tool, cwd, project_root, start, end, debug_json):
     is_flag=True,
     help="Open the generated index.html in your default browser.",
 )
-def export_latest_cmd(tool, cwd, project_root, start, end, output, label, repo, include_json, open_browser):
+@click.option(
+    "--changelog/--no-changelog",
+    default=_env_truthy("AI_CODE_SESSIONS_CHANGELOG") or _env_truthy("CTX_CHANGELOG"),
+    help="Append a .changelog/<actor>/entries.jsonl entry for this run (uses codex exec).",
+)
+@click.option("--changelog-actor", help="Override actor recorded in the changelog entry.")
+@click.option("--changelog-model", help="Override Codex model for changelog generation.")
+def export_latest_cmd(
+    tool,
+    cwd,
+    project_root,
+    start,
+    end,
+    output,
+    label,
+    repo,
+    include_json,
+    open_browser,
+    changelog,
+    changelog_actor,
+    changelog_model,
+):
     """Export the session that ran in the given time window to HTML."""
     output_dir = Path(output)
     output_dir.mkdir(exist_ok=True, parents=True)
+    project_root_path = Path(project_root).resolve()
 
     match = find_best_source_file(
         tool=tool,
@@ -2127,13 +3120,15 @@ def export_latest_cmd(tool, cwd, project_root, start, end, output, label, repo, 
     source_path = Path(match["best"]["path"])
 
     # Write matching debug info into the output directory for traceability.
-    (output_dir / "source_match.json").write_text(
+    source_match_path = output_dir / "source_match.json"
+    source_match_path.write_text(
         json.dumps(match, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
     generate_html(source_path, output_dir, github_repo=repo, session_label=label)
 
+    json_dest = None
     if include_json:
         json_dest = output_dir / source_path.name
         shutil.copy(source_path, json_dest)
@@ -2141,9 +3136,219 @@ def export_latest_cmd(tool, cwd, project_root, start, end, output, label, repo, 
 
     click.echo(f"Output: {output_dir.resolve()}")
 
+    export_runs_path = output_dir / "export_runs.jsonl"
+    previous_run = _read_last_jsonl_object(export_runs_path)
+    previous_run_id = (
+        previous_run.get("changelog_run_id")
+        if isinstance(previous_run, dict) and isinstance(previous_run.get("changelog_run_id"), str)
+        else None
+    )
+
+    changelog_run_id = None
+    changelog_appended = None
+    if changelog:
+        source_jsonl_for_digest = json_dest or source_path
+        actor_value = changelog_actor or _detect_actor(project_root=project_root_path)
+        actor_slug = _slugify_actor(actor_value)
+        entries_rel = f".changelog/{actor_slug}/entries.jsonl"
+        failures_rel = f".changelog/{actor_slug}/failures.jsonl"
+        try:
+            changelog_appended, changelog_run_id = _generate_and_append_changelog_entry(
+                tool=(tool or "unknown").lower(),
+                label=label,
+                cwd=cwd,
+                project_root=project_root_path,
+                session_dir=output_dir,
+                start=start,
+                end=end,
+                source_jsonl=Path(source_jsonl_for_digest).resolve(),
+                source_match_json=source_match_path.resolve(),
+                prior_prompts=3,
+                actor=actor_value,
+                codex_model=changelog_model,
+                continuation_of_run_id=previous_run_id,
+            )
+            if changelog_appended:
+                click.echo(f"Changelog: appended ({entries_rel}, run_id={changelog_run_id})")
+            else:
+                click.echo(f"Changelog: not updated (run_id={changelog_run_id}; see {failures_rel})")
+        except Exception as e:
+            click.echo(f"Changelog: FAILED ({e})")
+
+    # Always record the export run metadata for later backfills/debugging.
+    _append_jsonl(
+        export_runs_path,
+        {
+            "schema_version": 1,
+            "created_at": _now_iso8601(),
+            "tool": (tool or "unknown").lower(),
+            "label": label,
+            "start": start,
+            "end": end,
+            "cwd": cwd,
+            "project_root": str(project_root_path),
+            "output_dir": str(output_dir.resolve()),
+            "source_path": str(source_path.resolve()),
+            "copied_jsonl": str(json_dest.resolve()) if json_dest else None,
+            "source_match_json": str(source_match_path.resolve()),
+            "changelog_enabled": bool(changelog),
+            "changelog_run_id": changelog_run_id,
+            "changelog_appended": changelog_appended,
+        },
+    )
+
     if open_browser:
         index_url = (output_dir / "index.html").resolve().as_uri()
         webbrowser.open(index_url)
+
+
+@cli.group("changelog")
+def changelog_cli():
+    """Generate and manage per-repo changelog entries."""
+    pass
+
+
+@changelog_cli.command("backfill")
+@click.option(
+    "--project-root",
+    help="Target git repo root that contains .codex/.claude session outputs (defaults to git toplevel of CWD).",
+)
+@click.option(
+    "--sessions-dir",
+    multiple=True,
+    help="One or more session parent dirs to scan (defaults to <project-root>/.codex/sessions and <project-root>/.claude/sessions).",
+)
+@click.option("--actor", help="Override actor recorded in each changelog entry.")
+@click.option("--model", help="Override Codex model for changelog generation.")
+@click.option("--dry-run", is_flag=True, help="Print what would be done without writing entries.")
+@click.option("--limit", type=int, help="Maximum number of runs to process.")
+def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, limit):
+    """Backfill .changelog entries from existing ctx session output directories."""
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+
+    if sessions_dir:
+        bases = [Path(p).expanduser() for p in sessions_dir]
+        bases = [b if b.is_absolute() else (root / b) for b in bases]
+    else:
+        bases = [root / ".codex" / "sessions", root / ".claude" / "sessions"]
+
+    processed = 0
+    for base in bases:
+        if limit is not None and processed >= limit:
+            break
+        if not base.exists():
+            continue
+
+        tool_guess = "unknown"
+        if base.parent.name == ".codex":
+            tool_guess = "codex"
+        elif base.parent.name == ".claude":
+            tool_guess = "claude"
+
+        session_dirs = [p for p in base.iterdir() if p.is_dir()]
+        session_dirs.sort(key=lambda p: p.name)
+
+        for session_dir in session_dirs:
+            if limit is not None and processed >= limit:
+                break
+
+            export_runs_path = session_dir / "export_runs.jsonl"
+            source_match_path = session_dir / "source_match.json"
+
+            runs = []
+            if export_runs_path.exists():
+                runs = _read_jsonl_objects(export_runs_path)
+            else:
+                synthetic = {}
+                if source_match_path.exists():
+                    try:
+                        synthetic_match = json.loads(source_match_path.read_text(encoding="utf-8"))
+                        best = synthetic_match.get("best") if isinstance(synthetic_match, dict) else {}
+                        if isinstance(best, dict):
+                            synthetic["start"] = best.get("start")
+                            synthetic["end"] = best.get("end")
+                            synthetic["tool"] = tool_guess
+                    except Exception:
+                        pass
+                runs = [synthetic]
+
+            prev_run_id = None
+            label_guess = _derive_label_from_session_dir(session_dir)
+
+            for run in runs:
+                if limit is not None and processed >= limit:
+                    break
+                start = run.get("start") if isinstance(run, dict) else None
+                end = run.get("end") if isinstance(run, dict) else None
+                tool = (run.get("tool") if isinstance(run, dict) else None) or tool_guess
+                label = (run.get("label") if isinstance(run, dict) else None) or label_guess
+
+                copied_jsonl = (
+                    Path(run.get("copied_jsonl")).expanduser()
+                    if isinstance(run, dict) and run.get("copied_jsonl")
+                    else None
+                )
+                if copied_jsonl and not copied_jsonl.is_absolute():
+                    copied_jsonl = (root / copied_jsonl).resolve()
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    # Prefer the copied file that matches source_match.json, if present.
+                    if source_match_path.exists():
+                        try:
+                            match_obj = json.loads(source_match_path.read_text(encoding="utf-8"))
+                            best = match_obj.get("best") if isinstance(match_obj, dict) else None
+                            best_path = best.get("path") if isinstance(best, dict) else None
+                            if isinstance(best_path, str) and best_path:
+                                candidate = session_dir / Path(best_path).name
+                                if candidate.exists():
+                                    copied_jsonl = candidate
+                        except Exception:
+                            pass
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    copied_jsonl = _choose_copied_jsonl_for_session_dir(session_dir)
+
+                if (not start or not end) and copied_jsonl and copied_jsonl.exists():
+                    # Last-resort: infer run bounds from copied JSONL boundaries.
+                    if tool == "codex":
+                        sdt, edt, _, _ = _codex_rollout_session_times(copied_jsonl)
+                    else:
+                        sdt, edt, _, _ = _claude_session_times(copied_jsonl)
+                    if sdt and edt:
+                        start = start or sdt.isoformat()
+                        end = end or edt.isoformat()
+
+                if not start or not end or copied_jsonl is None or not copied_jsonl.exists():
+                    click.echo(f"Backfill: skipping {session_dir} (missing timestamps or JSONL)")
+                    continue
+
+                if dry_run:
+                    click.echo(
+                        f"Backfill: would process {tool} {session_dir.name} "
+                        f"({start} → {end}) using {copied_jsonl.name}"
+                    )
+                    processed += 1
+                    continue
+
+                appended, run_id = _generate_and_append_changelog_entry(
+                    tool=(tool or "unknown").lower(),
+                    label=label,
+                    cwd=str(root),
+                    project_root=root,
+                    session_dir=session_dir,
+                    start=start,
+                    end=end,
+                    source_jsonl=copied_jsonl.resolve(),
+                    source_match_json=source_match_path.resolve(),
+                    prior_prompts=3,
+                    actor=actor,
+                    codex_model=model,
+                    continuation_of_run_id=prev_run_id,
+                )
+                prev_run_id = run_id
+                processed += 1
+                status = "appended" if appended else "skipped/failed"
+                click.echo(f"Backfill: {status} run_id={run_id} ({session_dir.name})")
+
+    click.echo(f"Backfill complete: processed {processed} run(s).")
 
 
 def resolve_credentials(token, org_uuid):

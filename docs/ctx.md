@@ -112,6 +112,17 @@ export CTX_TRANSCRIPTS_PROJECT="/absolute/path/to/ai-code-sessions"
 export CTX_TZ="America/Los_Angeles"
 ```
 
+### Enable changelog generation
+
+`ai-code-sessions` can append an entry to `.changelog/<actor>/entries.jsonl` after each export (see `docs/changelog.md`).
+
+Enable this for `ctx` runs by setting:
+
+```bash
+export CTX_ACTOR="your-github-username"
+export CTX_CHANGELOG=1
+```
+
 ## Where the code lives
 
 `ctx` is currently implemented as a user-local script (outside this repo):
