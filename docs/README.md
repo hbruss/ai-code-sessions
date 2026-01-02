@@ -33,7 +33,7 @@ This documentation covers:
 
 ## Reference implementation
 
-The directory `docs/claude-code-transcripts/` is a vendored copy of Simon Willison’s `claude-code-transcripts` project (Apache-2.0). It is used as a reference.
+Upstream reference: Simon Willison’s `claude-code-transcripts` project (Apache-2.0). This repo borrows the same rendering approach but does not vendor the upstream source.
 
 Our working implementation lives here:
 

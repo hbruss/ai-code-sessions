@@ -1,6 +1,9 @@
 .DS_Store
 ._*
 
+# Upstream reference (not tracked in this repo)
+docs/claude-code-transcripts/*
+
 # Python
 __pycache__/
 *.py[cod]

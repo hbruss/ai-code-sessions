@@ -11,7 +11,7 @@ cli: ai-code-sessions
 - `src/ai_code_sessions/__init__.py`: CLI entrypoint, log parsers, exporters
 - `src/ai_code_sessions/templates/`: Jinja2 templates used to render `index.html` + `page-*.html`
 - `tests/`: pytest suite + Syrupy snapshots in `tests/__snapshots__/`
-- `docs/`: usage + architecture notes; `docs/claude-code-transcripts/` is a vendored upstream reference (not the implementation)
+- `docs/`: usage + architecture notes (see also Simon Willison’s `claude-code-transcripts` for upstream reference)
 - Scratch space: `.tmp/` (work-in-progress artifacts) and `.archive/` (retained artifacts)
 - Changelog output (written into the *target project repo*): `.changelog/<actor>/entries.jsonl` and `.changelog/<actor>/failures.jsonl`
 

@@ -10,7 +10,7 @@
 - `src/ai_code_sessions/__init__.py` — CLI, parsers, exporters
 - `src/ai_code_sessions/templates/` — Jinja templates
 - `tests/` — pytest + snapshot tests
-- `docs/claude-code-transcripts/` — upstream reference (do not treat as the implementation)
+- Upstream reference: Simon Willison’s `claude-code-transcripts` (this repo borrows the rendering approach)
 
 ## Run tests
 
