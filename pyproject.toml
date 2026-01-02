@@ -1,0 +1,40 @@
+[project]
+name = "ai-code-sessions"
+version = "0.1.0"
+description = "Convert Codex and Claude Code session logs to HTML transcripts"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "Russ Ronchi" },
+    { name = "Simon Willison" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "click",
+    "click-default-group",
+    "httpx",
+    "jinja2",
+    "markdown",
+    "questionary",
+]
+
+[project.urls]
+Homepage = "https://github.com/simonw/claude-code-transcripts"
+
+[project.scripts]
+ai-code-sessions = "ai_code_sessions:main"
+ai-code-transcripts = "ai_code_sessions:main"
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-httpx>=0.35.0",
+    "syrupy>=5.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

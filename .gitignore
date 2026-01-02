@@ -1,0 +1,33 @@
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Codex sessions and local scratch
+.codex/
+.tmp/*
+!.tmp/.gitkeep
+.archive/*
+!.archive/.gitkeep
+
+# Editors
+.vscode/
+.idea/
