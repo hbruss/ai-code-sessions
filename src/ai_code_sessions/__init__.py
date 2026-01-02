@@ -1798,7 +1798,7 @@ def generate_html(json_path, output_dir, github_repo=None, *, session_label=None
 
 
 @click.group(cls=DefaultGroup, default="local", default_if_no_args=True)
-@click.version_option(None, "-v", "--version", package_name="ai-code-transcripts")
+@click.version_option(None, "-v", "--version", package_name="ai-code-sessions")
 def cli():
     """Convert Codex and Claude Code session logs to mobile-friendly HTML pages."""
     pass

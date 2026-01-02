@@ -1,4 +1,4 @@
-"""Pytest configuration and fixtures for ai-code-transcripts tests."""
+"""Pytest configuration and fixtures for ai-code-sessions tests."""
 
 import pytest
 
