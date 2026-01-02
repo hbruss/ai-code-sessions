@@ -7,6 +7,8 @@ Generate clean, browsable HTML transcripts from native session logs produced by:
 
 This project is based on Simon Willison’s `claude-code-transcripts` (Apache-2.0) and reuses the same rendering approach (paginated HTML with tool calls + outputs).
 
+Huge credit to Simon Willison for the original code and inspiration behind this project. I first learned about his tool from reading his blog post, [claude-code-transcripts](https://simonwillison.net/2025/Dec/25/claude-code-transcripts/), and it immediately clicked with something I’ve always wanted: a clean, trustworthy transcript of every one of my AI coding sessions. I mostly prefer Codex CLI, but I still use Claude Code CLI sometimes — so I needed a workflow that lets me give sessions natural-language names and automatically produces both browsable HTML transcripts and an append-only changelog that’s conducive for an AI agent to use later as context/reference. If you’re looking for the original project, see Simon’s repo: https://github.com/simonw/claude-code-transcripts.
+
 Supported sources:
 
 - **Codex**: `~/.codex/sessions/**/rollout-*.jsonl`
