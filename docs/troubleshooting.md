@@ -45,7 +45,7 @@ codex login --help
 Common causes:
 
 - `usage_limit_reached` / `HTTP 429`: you hit your Codex usage limit. Backfill halts early in this case; rerun after your usage resets.
-- `Codex ran out of room in the model's context window`: the session window is very large. Reduce the window (or rerun after upgrading to a version with smaller digests).
+- `Codex ran out of room in the model's context window`: the session window is very large. The evaluator retries once with a smaller “budget” digest, but extremely large sessions may still fail.
 
 If you’re running in a sandboxed environment without network access, the export step can still succeed while changelog generation fails (by design).
 

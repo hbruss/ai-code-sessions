@@ -1338,6 +1338,18 @@ def _build_changelog_digest(
                         touched_deleted |= set(file_ops["deleted"])
                         touched_moved.extend(file_ops["moved"])
                         call["patch_snippet"] = _truncate_text(patch_text, 12000)
+                        patch_files: set[str] = set(file_ops["created"]) | set(file_ops["modified"]) | set(
+                            file_ops["deleted"]
+                        )
+                        for mv in file_ops["moved"]:
+                            if not isinstance(mv, dict):
+                                continue
+                            for k in ("from", "to"):
+                                v = mv.get(k)
+                                if isinstance(v, str) and v.strip():
+                                    patch_files.add(v.strip())
+                        if patch_files:
+                            call["patch_files"] = sorted(patch_files)
 
                 path_hint = _extract_path_from_tool_input(tool_input)
                 if path_hint:
@@ -1428,6 +1440,270 @@ def _build_changelog_digest(
             "commits": commits[:50],
         },
     }
+
+
+_BUDGET_DIGEST_DEFAULT_MAX_CHARS = 200_000
+
+
+def _touched_file_tokens_for_budget(touched_files: dict) -> set[str]:
+    if not isinstance(touched_files, dict):
+        return set()
+    tokens: set[str] = set()
+
+    def _add_path(path: str):
+        p = path.replace("\\", "/").lower().strip()
+        if not p:
+            return
+        base = p.rsplit("/", 1)[-1]
+        if base:
+            tokens.add(base)
+            stem = base.split(".", 1)[0]
+            if stem and stem != base:
+                tokens.add(stem)
+
+    for k in ("created", "modified", "deleted"):
+        for v in touched_files.get(k, []) if isinstance(touched_files.get(k), list) else []:
+            if isinstance(v, str):
+                _add_path(v)
+    moved = touched_files.get("moved")
+    if isinstance(moved, list):
+        for mv in moved:
+            if not isinstance(mv, dict):
+                continue
+            for k in ("from", "to"):
+                v = mv.get(k)
+                if isinstance(v, str):
+                    _add_path(v)
+
+    # Keep only short-ish tokens to avoid pathological scoring loops.
+    return {t for t in tokens if 1 <= len(t) <= 64 and "/" not in t}
+
+
+_BUDGET_USER_KEYWORDS = (
+    "fix",
+    "bug",
+    "refactor",
+    "rename",
+    "migrate",
+    "upgrade",
+    "security",
+    "perf",
+    "optimiz",
+    "test",
+    "failing",
+    "error",
+    "changelog",
+)
+
+
+def _score_budget_text(text: str, *, tokens: set[str]) -> int:
+    if not isinstance(text, str) or not text:
+        return 0
+    lower = text.lower()
+    score = 0
+    for kw in _BUDGET_USER_KEYWORDS:
+        if kw in lower:
+            score += 2
+    for tok in tokens:
+        if tok in lower:
+            score += 5
+    return score
+
+
+def _select_budget_items(
+    items: list[dict],
+    *,
+    max_items: int,
+    always_head: int,
+    always_tail: int,
+    score_fn,
+) -> list[dict]:
+    if not isinstance(items, list) or max_items <= 0:
+        return []
+    if len(items) <= max_items:
+        return items
+
+    keep: set[int] = set()
+    for i in range(min(always_head, len(items))):
+        keep.add(i)
+    for i in range(max(0, len(items) - always_tail), len(items)):
+        keep.add(i)
+
+    remaining = max_items - len(keep)
+    if remaining > 0:
+        scored: list[tuple[int, int]] = []
+        for i, item in enumerate(items):
+            if i in keep:
+                continue
+            try:
+                scored.append((int(score_fn(item)), i))
+            except Exception:
+                scored.append((0, i))
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        for _, i in scored[:remaining]:
+            keep.add(i)
+
+    return [items[i] for i in sorted(keep)]
+
+
+def _slim_tool_call_for_budget(call: dict) -> dict:
+    out = {
+        "timestamp": call.get("timestamp", ""),
+        "tool": call.get("tool", "unknown"),
+    }
+
+    for k in ("cmd", "is_test", "path_hint", "patch_files"):
+        if k in call:
+            out[k] = call.get(k)
+
+    res = call.get("result")
+    if isinstance(res, dict):
+        is_err = bool(res.get("is_error"))
+        res_out = {"timestamp": res.get("timestamp", ""), "is_error": is_err}
+        if "exit_code" in res and res.get("exit_code") is not None:
+            res_out["exit_code"] = res.get("exit_code")
+        if is_err and isinstance(res.get("content_snippet"), str) and res.get("content_snippet"):
+            res_out["content_snippet"] = res.get("content_snippet")
+        if res_out.get("is_error") or ("exit_code" in res_out):
+            out["result"] = res_out
+
+    return out
+
+
+def _budget_changelog_digest_once(
+    digest: dict,
+    *,
+    max_user_prompts: int = 30,
+    max_tool_calls: int = 200,
+    max_assistant_text: int = 4,
+    max_tool_errors: int = 20,
+) -> dict:
+    if not isinstance(digest, dict):
+        return {"schema_version": 1, "digest_mode": "budget", "delta": {}}
+
+    # Work off the already-parsed digest to avoid re-reading large transcripts.
+    out = json.loads(json.dumps(digest, ensure_ascii=False))
+    out["digest_mode"] = "budget"
+
+    delta = out.get("delta") if isinstance(out.get("delta"), dict) else {}
+    touched = delta.get("touched_files") if isinstance(delta.get("touched_files"), dict) else {}
+    tokens = _touched_file_tokens_for_budget(touched)
+
+    # Prompts: keep head/tail + highest-signal middle prompts.
+    prompts = delta.get("user_prompts") if isinstance(delta.get("user_prompts"), list) else []
+
+    def _prompt_score(item: dict) -> int:
+        return _score_budget_text(item.get("text", ""), tokens=tokens) if isinstance(item, dict) else 0
+
+    delta["user_prompts"] = _select_budget_items(
+        prompts,
+        max_items=max_user_prompts,
+        always_head=5,
+        always_tail=10,
+        score_fn=_prompt_score,
+    )
+
+    # Assistant text: keep last few snippets only.
+    assistant_text = delta.get("assistant_text") if isinstance(delta.get("assistant_text"), list) else []
+    if max_assistant_text > 0:
+        delta["assistant_text"] = assistant_text[-max_assistant_text:]
+    else:
+        delta["assistant_text"] = []
+
+    # Tool errors: keep last N (these already include output only for errors).
+    tool_errors = delta.get("tool_errors") if isinstance(delta.get("tool_errors"), list) else []
+    if max_tool_errors > 0:
+        delta["tool_errors"] = tool_errors[-max_tool_errors:]
+    else:
+        delta["tool_errors"] = []
+
+    # Tool calls: keep the most informative calls and drop bulky input/patch text.
+    tool_calls = delta.get("tool_calls") if isinstance(delta.get("tool_calls"), list) else []
+
+    def _call_score(item: dict) -> int:
+        if not isinstance(item, dict):
+            return 0
+        score = 0
+        tool = item.get("tool", "")
+        if _tool_name_is_apply_patch(tool):
+            score += 80
+        if item.get("is_test") is True:
+            score += 70
+        cmd = item.get("cmd")
+        if isinstance(cmd, str) and cmd.strip().startswith("git "):
+            score += 60
+        res = item.get("result") if isinstance(item.get("result"), dict) else {}
+        if res.get("is_error") is True:
+            score += 100
+        if item.get("patch_files"):
+            score += 15
+        if item.get("path_hint"):
+            score += 10
+        return score
+
+    selected = _select_budget_items(
+        tool_calls,
+        max_items=max_tool_calls,
+        always_head=10,
+        always_tail=10,
+        score_fn=_call_score,
+    )
+
+    delta["tool_calls"] = [_slim_tool_call_for_budget(c) for c in selected if isinstance(c, dict)]
+    out["delta"] = delta
+
+    return out
+
+
+def _budget_changelog_digest(
+    digest: dict,
+    *,
+    max_chars: int = _BUDGET_DIGEST_DEFAULT_MAX_CHARS,
+    max_user_prompts: int = 30,
+    max_tool_calls: int = 200,
+    max_assistant_text: int = 4,
+    max_tool_errors: int = 20,
+) -> dict:
+    budget_user = max_user_prompts
+    budget_calls = max_tool_calls
+    budget_assistant = max_assistant_text
+    budget_errors = max_tool_errors
+
+    last = _budget_changelog_digest_once(
+        digest,
+        max_user_prompts=budget_user,
+        max_tool_calls=budget_calls,
+        max_assistant_text=budget_assistant,
+        max_tool_errors=budget_errors,
+    )
+    for _ in range(6):
+        try:
+            size = len(json.dumps(last, ensure_ascii=False))
+        except Exception:
+            size = max_chars + 1
+        if size <= max_chars:
+            break
+
+        if budget_calls > 50:
+            budget_calls = max(50, budget_calls // 2)
+        elif budget_user > 15:
+            budget_user = max(15, budget_user - 5)
+        elif budget_assistant > 2:
+            budget_assistant = 2
+        elif budget_errors > 10:
+            budget_errors = 10
+        else:
+            break
+
+        last = _budget_changelog_digest_once(
+            digest,
+            max_user_prompts=budget_user,
+            max_tool_calls=budget_calls,
+            max_assistant_text=budget_assistant,
+            max_tool_errors=budget_errors,
+        )
+
+    return last
 
 
 def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
@@ -1624,6 +1900,16 @@ def _looks_like_usage_limit_error(error_text: str) -> bool:
     )
 
 
+def _looks_like_context_window_error(error_text: str) -> bool:
+    if not isinstance(error_text, str) or not error_text:
+        return False
+    lower = error_text.lower()
+    return (
+        "context window" in lower
+        and ("ran out of room" in lower or "start a new conversation" in lower or "clear earlier history" in lower)
+    )
+
+
 def _generate_and_append_changelog_entry(
     *,
     tool: str,
@@ -1672,15 +1958,30 @@ def _generate_and_append_changelog_entry(
             prior_prompts=prior_prompts,
         )
 
-        prompt = _build_codex_changelog_prompt(digest=digest)
         schema_path = _write_json_schema_tempfile(_CHANGELOG_CODEX_OUTPUT_SCHEMA)
         try:
-            codex_out = _run_codex_changelog_evaluator(
-                prompt=prompt,
-                schema_path=schema_path,
-                cd=project_root,
-                model=codex_model,
-            )
+            try:
+                prompt = _build_codex_changelog_prompt(digest=digest)
+                codex_out = _run_codex_changelog_evaluator(
+                    prompt=prompt,
+                    schema_path=schema_path,
+                    cd=project_root,
+                    model=codex_model,
+                )
+            except Exception as e:
+                # Some sessions are too large to fit in a single Codex exec prompt.
+                # Retry once with a budgeted digest before recording a failure.
+                if _looks_like_context_window_error(str(e)):
+                    budget_digest = _budget_changelog_digest(digest)
+                    prompt = _build_codex_changelog_prompt(digest=budget_digest)
+                    codex_out = _run_codex_changelog_evaluator(
+                        prompt=prompt,
+                        schema_path=schema_path,
+                        cd=project_root,
+                        model=codex_model,
+                    )
+                else:
+                    raise
         finally:
             try:
                 schema_path.unlink()
