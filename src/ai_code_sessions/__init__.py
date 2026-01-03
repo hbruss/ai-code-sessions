@@ -1368,15 +1368,23 @@ def _build_changelog_digest(
                 if is_error is None:
                     is_error = _infer_is_error_from_exec_output(content_text)
 
+                exit_code = None
+                if pending_tool_call is not None and pending_tool_call.get("cmd"):
+                    exit_code = _infer_exit_code_from_exec_output(content_text)
+
                 result_obj = {
                     "timestamp": ts,
                     "is_error": bool(is_error),
-                    "content_snippet": _truncate_text(content_text, 4000),
                 }
+                if exit_code is not None:
+                    result_obj["exit_code"] = exit_code
+                if is_error:
+                    # Keep command output only for errors (short tail for debugging).
+                    result_obj["content_snippet"] = _truncate_text_tail(content_text, 4000)
+
                 if pending_tool_call is not None and pending_tool_call.get("result") is None:
                     pending_tool_call["result"] = result_obj
                     if pending_tool_call.get("is_test") and pending_tool_call.get("cmd"):
-                        exit_code = _infer_exit_code_from_exec_output(content_text)
                         if block.get("is_error") is True:
                             test_result = "fail"
                         elif exit_code == 0:
