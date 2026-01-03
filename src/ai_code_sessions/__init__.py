@@ -1678,6 +1678,12 @@ def _generate_and_append_changelog_entry(
         if not isinstance(tags, list):
             tags = []
 
+        index_html_path = session_dir_abs / "index.html"
+        if not index_html_path.exists():
+            trace_path = session_dir_abs / "trace.html"
+            if trace_path.exists():
+                index_html_path = trace_path
+
         entry = {
             "schema_version": CHANGELOG_ENTRY_SCHEMA_VERSION,
             "run_id": run_id,
@@ -1693,7 +1699,7 @@ def _generate_and_append_changelog_entry(
             "continuation_of_run_id": continuation_of_run_id,
             "transcript": {
                 "output_dir": str(session_dir_abs),
-                "index_html": str((session_dir_abs / "index.html").resolve()),
+                "index_html": str(index_html_path.resolve()),
                 "source_jsonl": str(source_jsonl),
                 "source_match_json": str(source_match_json),
             },
@@ -1778,6 +1784,218 @@ def _choose_copied_jsonl_for_session_dir(session_dir: Path) -> Path | None:
     # Choose largest file to bias toward the real transcript.
     preferred.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
     return preferred[0] if preferred else None
+
+
+_CODEX_RESUME_ID_RE = re.compile(
+    r"\\bcodex\\s+resume\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _read_legacy_ctx_messages_json(session_dir: Path) -> dict | None:
+    """Read legacy CTX `messages.json` (PTY transcription) if present."""
+    path = session_dir / "messages.json"
+    if not path.exists():
+        return None
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _read_legacy_ctx_events_first(session_dir: Path) -> dict | None:
+    path = session_dir / "events.jsonl"
+    if not path.exists():
+        return None
+    try:
+        obj = _peek_first_jsonl_object(path)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _extract_codex_resume_id_from_legacy_messages(messages_obj: dict) -> str | None:
+    messages = messages_obj.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        text = msg.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        m = _CODEX_RESUME_ID_RE.search(text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _legacy_ctx_metadata(session_dir: Path) -> dict | None:
+    """Best-effort metadata for legacy PTY session directories.
+
+    This is only used to locate/copy the underlying native JSONL so changelog
+    generation can run. We never overwrite any existing files in the session dir.
+    """
+    messages_obj = _read_legacy_ctx_messages_json(session_dir)
+    events_first = _read_legacy_ctx_events_first(session_dir)
+    if messages_obj is None or events_first is None:
+        return None
+
+    started = messages_obj.get("started")
+    ended = messages_obj.get("ended")
+    label = messages_obj.get("label")
+    tool = messages_obj.get("tool")
+    project_root = messages_obj.get("project_root")
+    cwd = events_first.get("cwd") or messages_obj.get("cwd")
+
+    # Fallback timestamps from events.jsonl if messages.json is missing them.
+    if not started or not ended:
+        events_path = session_dir / "events.jsonl"
+        last = _read_last_jsonl_object(events_path)
+        started = started or (events_first.get("ts") if isinstance(events_first, dict) else None)
+        ended = ended or (last.get("ts") if isinstance(last, dict) else None)
+
+    codex_resume_id = _extract_codex_resume_id_from_legacy_messages(messages_obj)
+
+    meta = {
+        "tool": tool,
+        "label": label,
+        "project_root": project_root,
+        "cwd": cwd,
+        "start": started,
+        "end": ended,
+        "codex_resume_id": codex_resume_id,
+    }
+    return meta
+
+
+def _user_codex_sessions_dir() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+    return codex_home / "sessions"
+
+
+def _candidate_codex_day_dirs(sessions_base: Path, start_dt: datetime, end_dt: datetime) -> list[Path]:
+    candidate_dirs = set()
+    for dt in (start_dt, end_dt):
+        local = dt.astimezone()
+        for offset in (-1, 0, 1):
+            d = local.date() + timedelta(days=offset)
+            candidate_dirs.add(sessions_base / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}")
+    return sorted(candidate_dirs)
+
+
+def _find_codex_rollout_by_resume_id(
+    *,
+    resume_id: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    cwd: str | None,
+) -> Path | None:
+    base = _user_codex_sessions_dir()
+    if not base.exists() or not resume_id:
+        return None
+
+    pattern = f"rollout-*{resume_id}*.jsonl"
+    candidates: list[Path] = []
+
+    for d in _candidate_codex_day_dirs(base, start_dt, end_dt):
+        if not d.exists():
+            continue
+        candidates.extend([p for p in d.glob(pattern) if p.is_file()])
+
+    # Fallback: some installations may store rollouts outside YYYY/MM/DD.
+    if not candidates:
+        try:
+            for p in base.rglob(pattern):
+                if p.is_file():
+                    candidates.append(p)
+                if len(candidates) >= 25:
+                    break
+        except Exception:
+            return None
+
+    if not candidates:
+        return None
+
+    best_path: Path | None = None
+    best_score: float | None = None
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+        sess_start, sess_end, sess_cwd, _ = _codex_rollout_session_times(path)
+        if cwd and sess_cwd and not _same_path(sess_cwd, cwd):
+            continue
+        sess_start = _clamp_dt(sess_start, mtime_dt)
+        sess_end = _clamp_dt(sess_end, mtime_dt)
+        score = abs((sess_start - start_dt).total_seconds()) + abs((sess_end - end_dt).total_seconds())
+        if best_score is None or score < best_score:
+            best_score = score
+            best_path = path
+
+    return best_path or candidates[0]
+
+
+def _maybe_copy_native_jsonl_into_legacy_session_dir(
+    *,
+    tool: str,
+    session_dir: Path,
+    start: str | None,
+    end: str | None,
+    cwd: str | None,
+    codex_resume_id: str | None,
+) -> Path | None:
+    """If this is a legacy PTY session dir, try to copy the native JSONL in place.
+
+    Never overwrites existing files.
+    """
+    existing = _choose_copied_jsonl_for_session_dir(session_dir)
+    if existing and existing.exists():
+        return existing
+
+    if tool != "codex":
+        return None
+
+    if not start or not end:
+        return None
+    start_dt = _parse_iso8601(start)
+    end_dt = _parse_iso8601(end)
+    if start_dt is None or end_dt is None:
+        return None
+
+    src: Path | None = None
+    if codex_resume_id:
+        src = _find_codex_rollout_by_resume_id(
+            resume_id=codex_resume_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            cwd=cwd,
+        )
+
+    if src is None and cwd:
+        try:
+            match = _find_best_codex_rollout(cwd=cwd, start_dt=start_dt, end_dt=end_dt)
+            src = Path(match["best"]["path"])
+        except Exception:
+            src = None
+
+    if src is None or not src.exists():
+        return None
+
+    dest = session_dir / src.name
+    if dest.exists():
+        return dest
+
+    try:
+        shutil.copy2(src, dest)
+    except Exception:
+        return None
+
+    return dest
 
 
 def _git_toplevel(cwd: Path) -> Path | None:
@@ -3382,6 +3600,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
 
             export_runs_path = session_dir / "export_runs.jsonl"
             source_match_path = session_dir / "source_match.json"
+            legacy_meta = _legacy_ctx_metadata(session_dir)
 
             runs = []
             if export_runs_path.exists():
@@ -3398,6 +3617,16 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                             synthetic["tool"] = tool_guess
                     except Exception:
                         pass
+
+                # Legacy PTY sessions: infer timestamps and matching hints.
+                if legacy_meta:
+                    synthetic.setdefault("start", legacy_meta.get("start"))
+                    synthetic.setdefault("end", legacy_meta.get("end"))
+                    synthetic.setdefault("tool", legacy_meta.get("tool") or tool_guess)
+                    synthetic.setdefault("label", legacy_meta.get("label"))
+                    synthetic.setdefault("cwd", legacy_meta.get("cwd"))
+                    synthetic.setdefault("project_root", legacy_meta.get("project_root"))
+                    synthetic.setdefault("codex_resume_id", legacy_meta.get("codex_resume_id"))
                 runs = [synthetic]
 
             prev_run_id = None
@@ -3410,6 +3639,8 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                 end = run.get("end") if isinstance(run, dict) else None
                 tool = (run.get("tool") if isinstance(run, dict) else None) or tool_guess
                 label = (run.get("label") if isinstance(run, dict) else None) or label_guess
+                run_cwd = run.get("cwd") if isinstance(run, dict) else None
+                codex_resume_id = run.get("codex_resume_id") if isinstance(run, dict) else None
 
                 copied_jsonl = (
                     Path(run.get("copied_jsonl")).expanduser()
@@ -3433,6 +3664,16 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                             pass
                 if copied_jsonl is None or not copied_jsonl.exists():
                     copied_jsonl = _choose_copied_jsonl_for_session_dir(session_dir)
+
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    copied_jsonl = _maybe_copy_native_jsonl_into_legacy_session_dir(
+                        tool=(tool or "unknown").lower(),
+                        session_dir=session_dir,
+                        start=start,
+                        end=end,
+                        cwd=run_cwd or (legacy_meta.get("cwd") if legacy_meta else None),
+                        codex_resume_id=codex_resume_id or (legacy_meta.get("codex_resume_id") if legacy_meta else None),
+                    )
 
                 if (not start or not end) and copied_jsonl and copied_jsonl.exists():
                     # Last-resort: infer run bounds from copied JSONL boundaries.
