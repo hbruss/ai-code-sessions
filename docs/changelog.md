@@ -59,3 +59,5 @@ Notes:
 
 - If `export_runs.jsonl` is present, backfill can generate **delta-only** entries for resumed sessions.
 - Without it, backfill will create a best-effort single entry per session directory.
+- To keep entries low-noise and cheap to generate, the evaluator digest **does not include command output** unless a tool call is marked as an error (then a short tail is included for context).
+- If Codex returns a usage limit (`HTTP 429` / `usage_limit_reached`), backfill halts early so you can rerun later without generating a long list of failures.
