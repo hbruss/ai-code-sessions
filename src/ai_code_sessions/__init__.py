@@ -1604,6 +1604,18 @@ def _write_changelog_failure(
     _append_jsonl(failures_path, payload)
 
 
+def _looks_like_usage_limit_error(error_text: str) -> bool:
+    if not isinstance(error_text, str) or not error_text:
+        return False
+    lower = error_text.lower()
+    return (
+        "usage_limit_reached" in lower
+        or "you've hit your usage limit" in lower
+        or "http 429" in lower
+        or "429 too many requests" in lower
+    )
+
+
 def _generate_and_append_changelog_entry(
     *,
     tool: str,
@@ -1619,7 +1631,8 @@ def _generate_and_append_changelog_entry(
     actor: str | None = None,
     codex_model: str | None = None,
     continuation_of_run_id: str | None = None,
-) -> tuple[bool, str | None]:
+    halt_on_429: bool = False,
+) -> tuple[bool, str | None, str]:
     changelog_dir = project_root / ".changelog"
 
     project = project_root.name or str(project_root)
@@ -1641,7 +1654,7 @@ def _generate_and_append_changelog_entry(
         | _load_existing_run_ids(changelog_dir / "actors" / actor_slug / "entries.jsonl")
     )
     if run_id in existing:
-        return False, run_id
+        return False, run_id, "exists"
 
     try:
         digest = _build_changelog_digest(
@@ -1713,7 +1726,7 @@ def _generate_and_append_changelog_entry(
         }
 
         _append_jsonl(entries_path, entry)
-        return True, run_id
+        return True, run_id, "appended"
     except Exception as e:
         _write_changelog_failure(
             changelog_dir=changelog_dir,
@@ -1729,7 +1742,9 @@ def _generate_and_append_changelog_entry(
             source_jsonl=source_jsonl,
             source_match_json=source_match_json,
         )
-        return False, run_id
+        if halt_on_429 and _looks_like_usage_limit_error(str(e)):
+            return False, run_id, "rate_limited"
+        return False, run_id, "failed"
 
 
 def _derive_label_from_session_dir(session_dir: Path) -> str | None:
@@ -1787,7 +1802,7 @@ def _choose_copied_jsonl_for_session_dir(session_dir: Path) -> Path | None:
 
 
 _CODEX_RESUME_ID_RE = re.compile(
-    r"\\bcodex\\s+resume\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\b",
+    r"\bcodex\s+resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
     flags=re.IGNORECASE,
 )
 
@@ -3499,7 +3514,7 @@ def export_latest_cmd(
         entries_rel = f".changelog/{actor_slug}/entries.jsonl"
         failures_rel = f".changelog/{actor_slug}/failures.jsonl"
         try:
-            changelog_appended, changelog_run_id = _generate_and_append_changelog_entry(
+            changelog_appended, changelog_run_id, changelog_status = _generate_and_append_changelog_entry(
                 tool=(tool or "unknown").lower(),
                 label=label,
                 cwd=cwd,
@@ -3514,7 +3529,7 @@ def export_latest_cmd(
                 codex_model=changelog_model,
                 continuation_of_run_id=previous_run_id,
             )
-            if changelog_appended:
+            if changelog_appended and changelog_status == "appended":
                 click.echo(f"Changelog: appended ({entries_rel}, run_id={changelog_run_id})")
             else:
                 click.echo(f"Changelog: not updated (run_id={changelog_run_id}; see {failures_rel})")
@@ -3572,6 +3587,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
     """Backfill .changelog entries from existing ctx session output directories."""
     root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
 
+    halted = False
     if sessions_dir:
         bases = [Path(p).expanduser() for p in sessions_dir]
         bases = [b if b.is_absolute() else (root / b) for b in bases]
@@ -3697,7 +3713,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                     processed += 1
                     continue
 
-                appended, run_id = _generate_and_append_changelog_entry(
+                appended, run_id, status = _generate_and_append_changelog_entry(
                     tool=(tool or "unknown").lower(),
                     label=label,
                     cwd=str(root),
@@ -3711,13 +3727,31 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                     actor=actor,
                     codex_model=model,
                     continuation_of_run_id=prev_run_id,
+                    halt_on_429=True,
                 )
                 prev_run_id = run_id
                 processed += 1
-                status = "appended" if appended else "skipped/failed"
-                click.echo(f"Backfill: {status} run_id={run_id} ({session_dir.name})")
+                if status == "rate_limited":
+                    click.echo(f"Backfill: halted (usage limit reached) run_id={run_id} ({session_dir.name})")
+                    halted = True
+                    break
+                elif status == "exists":
+                    click.echo(f"Backfill: skipped (already exists) run_id={run_id} ({session_dir.name})")
+                elif status == "failed":
+                    click.echo(f"Backfill: failed run_id={run_id} ({session_dir.name})")
+                else:
+                    click.echo(f"Backfill: appended run_id={run_id} ({session_dir.name})")
 
-    click.echo(f"Backfill complete: processed {processed} run(s).")
+            if halted:
+                break
+
+        if halted:
+            break
+
+    if halted:
+        click.echo(f"Backfill halted: processed {processed} run(s).")
+    else:
+        click.echo(f"Backfill complete: processed {processed} run(s).")
 
 
 def resolve_credentials(token, org_uuid):
