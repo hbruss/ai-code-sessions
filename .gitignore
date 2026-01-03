@@ -25,7 +25,8 @@ venv/
 htmlcov/
 
 # Codex sessions and local scratch
-.codex/
+.codex/sessions/*
+.claude/sessions/*
 .tmp/*
 !.tmp/.gitkeep
 .archive/*
