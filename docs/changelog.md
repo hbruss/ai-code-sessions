@@ -20,6 +20,8 @@ In the **session output directory** (for resume/backfill support):
 
 - `export_runs.jsonl` — records each export run window (`--start/--end`) for that session dir
 
+Internally, changelog generation runs `codex exec` in non-interactive mode and uses an isolated temporary `CODEX_HOME` so it doesn't need to write to your main `~/.codex` directory.
+
 ## Enable it
 
 ### With `ctx`

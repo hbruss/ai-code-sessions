@@ -838,7 +838,9 @@ _CHANGELOG_CODEX_OUTPUT_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "additionalProperties": False,
-    "required": ["summary", "bullets", "tags"],
+    # Codex structured outputs require `required` to include every key in
+    # `properties`. Optional fields should still be present (use null).
+    "required": ["summary", "bullets", "tags", "notes"],
     "properties": {
         "summary": {"type": "string", "minLength": 1, "maxLength": 500},
         "bullets": {
@@ -1035,6 +1037,63 @@ def _truncate_text(value: str, max_chars: int) -> str:
     if len(value) <= max_chars:
         return value
     return value[: max_chars - 3].rstrip() + "..."
+
+
+def _truncate_text_middle(value: str, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    if max_chars <= 0:
+        return ""
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    glue = "\n...\n"
+    if max_chars <= len(glue) + 10:
+        return _truncate_text(value, max_chars)
+    head_len = (max_chars - len(glue)) // 2
+    tail_len = max_chars - len(glue) - head_len
+    return value[:head_len].rstrip() + glue + value[-tail_len:].lstrip()
+
+
+def _truncate_text_tail(value: str, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    if max_chars <= 0:
+        return ""
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    return "..." + value[-(max_chars - 3) :].lstrip()
+
+
+def _strip_digest_json_block(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    if "DIGEST_JSON_START" not in text and "DIGEST_JSON_END" not in text:
+        return text
+
+    # Full block present.
+    text = re.sub(
+        r"DIGEST_JSON_START.*?DIGEST_JSON_END",
+        "DIGEST_JSON_[REDACTED]",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # Start marker present but end marker missing (truncated output).
+    text = re.sub(
+        r"DIGEST_JSON_START.*",
+        "DIGEST_JSON_[REDACTED]",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # End marker present but start marker missing (we captured the tail).
+    if "DIGEST_JSON_START" not in text and "DIGEST_JSON_END" in text:
+        after = text.split("DIGEST_JSON_END", 1)[1]
+        text = "DIGEST_JSON_[REDACTED]\n" + after.lstrip()
+
+    return text
 
 
 def _extract_text_blocks_from_message(message: dict) -> list[str]:
@@ -1364,6 +1423,21 @@ def _build_changelog_digest(
 
 
 def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
+    def _detect_user_codex_model() -> str | None:
+        try:
+            src_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+            cfg = src_home / "config.toml"
+            if not cfg.is_file():
+                return None
+            text = cfg.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r'(?m)^\\s*model\\s*=\\s*"([^"]+)"\\s*$', text)
+            if not m:
+                return None
+            value = m.group(1).strip()
+            return value or None
+        except Exception:
+            return None
+
     codex_bin = shutil.which("codex")
     if not codex_bin:
         raise click.ClickException("codex CLI not found on PATH (required for changelog generation)")
@@ -1373,6 +1447,40 @@ def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path |
     )
     out_path = Path(out_file.name)
     out_file.close()
+
+    temp_codex_home: tempfile.TemporaryDirectory[str] | None = None
+    env = os.environ.copy()
+    try:
+        temp_codex_home = tempfile.TemporaryDirectory(prefix="ai-code-sessions-codex-home-")
+        temp_home_path = Path(temp_codex_home.name)
+        env["CODEX_HOME"] = str(temp_home_path)
+
+        # Seed auth.json from the user's existing Codex home, if present, so a
+        # headless `codex exec` can authenticate without additional prompts.
+        try:
+            src_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+            auth_src = src_home / "auth.json"
+            auth_dest = temp_home_path / "auth.json"
+            if auth_src.is_file() and not auth_dest.exists():
+                shutil.copy2(auth_src, auth_dest)
+                try:
+                    os.chmod(auth_dest, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+    except Exception:
+        # If we can't create an isolated CODEX_HOME for any reason, fall back to
+        # the default environment (Codex may still work in non-sandboxed runs).
+        if temp_codex_home is not None:
+            try:
+                temp_codex_home.cleanup()
+            except Exception:
+                pass
+        temp_codex_home = None
+
+    model = model or _detect_user_codex_model()
 
     cmd = [
         codex_bin,
@@ -1396,16 +1504,36 @@ def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path |
         input=prompt,
         text=True,
         capture_output=True,
+        env=env,
     )
-    if proc.returncode != 0:
-        raise click.ClickException(
-            f"codex exec failed (exit {proc.returncode}). stderr: {proc.stderr.strip()}"
-        )
-
     try:
-        raw = out_path.read_text(encoding="utf-8").strip()
-    except OSError as e:
-        raise click.ClickException(f"Failed reading codex output: {e}")
+        if proc.returncode != 0:
+            stderr_sanitized = _strip_digest_json_block(proc.stderr)
+            stdout_sanitized = _strip_digest_json_block(proc.stdout)
+            stderr_tail = _truncate_text_tail(stderr_sanitized, 4000)
+            stdout_tail = _truncate_text_tail(stdout_sanitized, 2000)
+            details = []
+            if stderr_tail:
+                details.append(f"stderr_tail: {stderr_tail}")
+            if stdout_tail:
+                details.append(f"stdout_tail: {stdout_tail}")
+            suffix = ("\n" + "\n".join(details)) if details else ""
+            raise click.ClickException(f"codex exec failed (exit {proc.returncode}).{suffix}")
+
+        try:
+            raw = out_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            raise click.ClickException(f"Failed reading codex output: {e}")
+    finally:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        if temp_codex_home is not None:
+            try:
+                temp_codex_home.cleanup()
+            except Exception:
+                pass
 
     if not raw:
         raise click.ClickException("codex output was empty")
@@ -1470,7 +1598,7 @@ def _write_changelog_failure(
         "end": end,
         "source_jsonl": str(source_jsonl) if source_jsonl else None,
         "source_match_json": str(source_match_json) if source_match_json else None,
-        "error": _truncate_text(error, 2000),
+        "error": _truncate_text_middle(error, 2000),
     }
     _, failures_path = _changelog_paths(changelog_dir=changelog_dir, actor=actor)
     _append_jsonl(failures_path, payload)

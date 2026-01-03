@@ -30,6 +30,20 @@ Open `source_match.json` in the session directory and look for:
 
 If `candidates` is empty or missing, the exporter likely couldn’t find matching log files.
 
+### Changelog generation/backfill produced only `failures.jsonl`
+
+Changelog generation is best-effort and runs `codex exec` under the hood.
+
+1. Open `.changelog/<actor>/failures.jsonl` and read the `error` field (it includes a `stderr_tail` for the actionable part).
+2. Confirm `codex` is installed and logged in:
+
+```bash
+codex --version
+codex login --help
+```
+
+If you’re running in a sandboxed environment without network access, the export step can still succeed while changelog generation fails (by design).
+
 ### `No matching Codex rollout files found`
 
 Confirm Codex is writing rollout files:
