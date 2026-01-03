@@ -35,3 +35,7 @@ htmlcov/
 # Editors
 .vscode/
 .idea/
+
+# Scratch + retention directories (local only)
+.archive/
+.tmp/
