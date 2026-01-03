@@ -27,15 +27,9 @@ htmlcov/
 # Codex sessions and local scratch
 .codex/sessions/*
 .claude/sessions/*
-.tmp/*
-!.tmp/.gitkeep
-.archive/*
-!.archive/.gitkeep
+.tmp/
+.archive/
 
 # Editors
 .vscode/
 .idea/
-
-# Scratch + retention directories (local only)
-.archive/
-.tmp/
