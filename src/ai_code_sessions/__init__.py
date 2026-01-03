@@ -1707,21 +1707,6 @@ def _budget_changelog_digest(
 
 
 def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
-    def _detect_user_codex_model() -> str | None:
-        try:
-            src_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
-            cfg = src_home / "config.toml"
-            if not cfg.is_file():
-                return None
-            text = cfg.read_text(encoding="utf-8", errors="replace")
-            m = re.search(r'(?m)^\\s*model\\s*=\\s*"([^"]+)"\\s*$', text)
-            if not m:
-                return None
-            value = m.group(1).strip()
-            return value or None
-        except Exception:
-            return None
-
     codex_bin = shutil.which("codex")
     if not codex_bin:
         raise click.ClickException("codex CLI not found on PATH (required for changelog generation)")
@@ -1764,7 +1749,8 @@ def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path |
                 pass
         temp_codex_home = None
 
-    model = model or _detect_user_codex_model()
+    # Defaults for headless changelog evaluation.
+    model = model or "gpt-5.2"
 
     cmd = [
         codex_bin,
@@ -1780,6 +1766,8 @@ def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path |
     ]
     if model:
         cmd[2:2] = ["-m", model]
+    # Prefer high reasoning for changelog distillation (can be overridden via --model).
+    cmd[2:2] = ["-c", 'model_reasoning_effort="xhigh"']
     if cd:
         cmd[2:2] = ["-C", str(cd)]
 
@@ -1833,6 +1821,119 @@ def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path |
             except json.JSONDecodeError:
                 pass
         raise click.ClickException("codex output was not valid JSON")
+
+
+_CLAUDE_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _CLAUDE_ANSI_RE.sub("", text or "")
+
+
+def _extract_json_object(text: str) -> dict:
+    s = (text or "").strip()
+    s = _strip_ansi(s).strip()
+    start = s.find("{")
+    end = s.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        raise click.ClickException("Claude output did not contain a JSON object")
+    try:
+        obj = json.loads(s[start : end + 1])
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"Claude output was not valid JSON ({e})")
+    if not isinstance(obj, dict):
+        raise click.ClickException("Claude output JSON was not an object")
+    return obj
+
+
+def _extract_json_from_result_string(result_text: str) -> dict:
+    s = (result_text or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\\s*", "", s.strip(), flags=re.IGNORECASE)
+        s = re.sub(r"\\s*```\\s*$", "", s.strip())
+    return _extract_json_object(s)
+
+
+def _run_claude_changelog_evaluator(
+    *,
+    prompt: str,
+    json_schema: dict,
+    cd: Path | None = None,
+    model: str | None = None,
+    max_thinking_tokens: int | None = None,
+    timeout_seconds: int = 900,
+) -> dict:
+    exe = shutil.which("claude")
+    if not exe:
+        raise click.ClickException(
+            "Claude Code CLI ('claude') not found on PATH (required for changelog evaluation). "
+            "Install and authenticate Claude Code, then retry."
+        )
+
+    model = model or "opus"
+    max_thinking_tokens = 8192 if max_thinking_tokens is None else max_thinking_tokens
+
+    args: list[str] = [
+        exe,
+        "--print",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(json_schema, ensure_ascii=False),
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--model",
+        model,
+        "--max-thinking-tokens",
+        str(max_thinking_tokens),
+        prompt,
+    ]
+
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(cd) if cd else None,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except OSError as e:
+        raise click.ClickException(f"claude failed to start: {e}")
+
+    stdout = _strip_ansi(proc.stdout or "").strip()
+    stderr = _strip_ansi(proc.stderr or "").strip()
+    if proc.returncode != 0:
+        stderr_tail = _truncate_text_tail(stderr, 4000)
+        stdout_tail = _truncate_text_tail(stdout, 2000)
+        details = []
+        if stderr_tail:
+            details.append(f"stderr_tail: {stderr_tail}")
+        if stdout_tail:
+            details.append(f"stdout_tail: {stdout_tail}")
+        suffix = ("\n" + "\n".join(details)) if details else ""
+        raise click.ClickException(f"claude failed (exit {proc.returncode}).{suffix}")
+
+    resp = _extract_json_object(stdout)
+    if bool(resp.get("is_error")):
+        raise click.ClickException(f"claude returned is_error=true. raw_response={_truncate_text(str(resp), 2000)}")
+
+    structured = resp.get("structured_output")
+    if isinstance(structured, dict):
+        return structured
+
+    result_text = resp.get("result")
+    if isinstance(result_text, str) and result_text.strip():
+        structured2 = _extract_json_from_result_string(result_text)
+        if isinstance(structured2, dict):
+            return structured2
+
+    raise click.ClickException(
+        "Claude did not return structured_output and no JSON could be parsed from result text. "
+        f"raw_response_keys={list(resp.keys())}"
+    )
 
 
 def _build_codex_changelog_prompt(*, digest: dict) -> str:
@@ -1895,8 +1996,10 @@ def _looks_like_usage_limit_error(error_text: str) -> bool:
     return (
         "usage_limit_reached" in lower
         or "you've hit your usage limit" in lower
-        or "http 429" in lower
-        or "429 too many requests" in lower
+        or "rate_limit" in lower
+        or "rate limit" in lower
+        or "too many requests" in lower
+        or re.search(r"\\b429\\b", lower) is not None
     )
 
 
@@ -1905,8 +2008,10 @@ def _looks_like_context_window_error(error_text: str) -> bool:
         return False
     lower = error_text.lower()
     return (
-        "context window" in lower
-        and ("ran out of room" in lower or "start a new conversation" in lower or "clear earlier history" in lower)
+        "argument list too long" in lower
+        or ("context window" in lower and ("ran out of room" in lower or "start a new conversation" in lower))
+        or ("context length" in lower and ("exceeded" in lower or "too long" in lower))
+        or ("prompt" in lower and "too long" in lower)
     )
 
 
@@ -1923,7 +2028,8 @@ def _generate_and_append_changelog_entry(
     source_match_json: Path,
     prior_prompts: int = 3,
     actor: str | None = None,
-    codex_model: str | None = None,
+    evaluator: str = "codex",
+    evaluator_model: str | None = None,
     continuation_of_run_id: str | None = None,
     halt_on_429: bool = False,
 ) -> tuple[bool, str | None, str]:
@@ -1958,45 +2064,58 @@ def _generate_and_append_changelog_entry(
             prior_prompts=prior_prompts,
         )
 
-        schema_path = _write_json_schema_tempfile(_CHANGELOG_CODEX_OUTPUT_SCHEMA)
+        evaluator_value = (evaluator or "codex").strip().lower()
+        if evaluator_value not in ("codex", "claude"):
+            raise click.ClickException(f"Unknown changelog evaluator: {evaluator}")
+
+        schema_path: Path | None = None
         try:
-            try:
-                prompt = _build_codex_changelog_prompt(digest=digest)
-                codex_out = _run_codex_changelog_evaluator(
-                    prompt=prompt,
-                    schema_path=schema_path,
-                    cd=project_root,
-                    model=codex_model,
-                )
-            except Exception as e:
-                # Some sessions are too large to fit in a single Codex exec prompt.
-                # Retry once with a budgeted digest before recording a failure.
-                if _looks_like_context_window_error(str(e)):
-                    budget_digest = _budget_changelog_digest(digest)
-                    prompt = _build_codex_changelog_prompt(digest=budget_digest)
-                    codex_out = _run_codex_changelog_evaluator(
+            if evaluator_value == "codex":
+                schema_path = _write_json_schema_tempfile(_CHANGELOG_CODEX_OUTPUT_SCHEMA)
+
+            def _run_eval(d: dict) -> dict:
+                prompt = _build_codex_changelog_prompt(digest=d)
+                if evaluator_value == "codex":
+                    if schema_path is None:
+                        raise click.ClickException("Internal error: missing Codex schema path")
+                    return _run_codex_changelog_evaluator(
                         prompt=prompt,
                         schema_path=schema_path,
                         cd=project_root,
-                        model=codex_model,
+                        model=evaluator_model,
                     )
+                return _run_claude_changelog_evaluator(
+                    prompt=prompt,
+                    json_schema=_CHANGELOG_CODEX_OUTPUT_SCHEMA,
+                    cd=project_root,
+                    model=evaluator_model,
+                )
+
+            try:
+                evaluator_out = _run_eval(digest)
+            except Exception as e:
+                # Some sessions are too large to fit in a single evaluator prompt.
+                # Retry once with a budgeted digest before recording a failure.
+                if _looks_like_context_window_error(str(e)):
+                    evaluator_out = _run_eval(_budget_changelog_digest(digest))
                 else:
                     raise
         finally:
-            try:
-                schema_path.unlink()
-            except OSError:
-                pass
+            if schema_path is not None:
+                try:
+                    schema_path.unlink()
+                except OSError:
+                    pass
 
-        summary = codex_out.get("summary")
-        bullets = codex_out.get("bullets")
-        tags = codex_out.get("tags")
-        notes = codex_out.get("notes")
+        summary = evaluator_out.get("summary")
+        bullets = evaluator_out.get("bullets")
+        tags = evaluator_out.get("tags")
+        notes = evaluator_out.get("notes")
 
         if not isinstance(summary, str) or not summary.strip():
-            raise click.ClickException("codex output missing summary")
+            raise click.ClickException(f"{evaluator_value} output missing summary")
         if not isinstance(bullets, list) or not bullets:
-            raise click.ClickException("codex output missing bullets")
+            raise click.ClickException(f"{evaluator_value} output missing bullets")
         if not isinstance(tags, list):
             tags = []
 
@@ -3835,7 +3954,8 @@ def export_latest_cmd(
                 source_match_json=source_match_path.resolve(),
                 prior_prompts=3,
                 actor=actor_value,
-                codex_model=changelog_model,
+                evaluator="codex",
+                evaluator_model=changelog_model,
                 continuation_of_run_id=previous_run_id,
             )
             if changelog_appended and changelog_status == "appended":
@@ -3889,10 +4009,17 @@ def changelog_cli():
     help="One or more session parent dirs to scan (defaults to <project-root>/.codex/sessions and <project-root>/.claude/sessions).",
 )
 @click.option("--actor", help="Override actor recorded in each changelog entry.")
-@click.option("--model", help="Override Codex model for changelog generation.")
+@click.option(
+    "--evaluator",
+    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    default="codex",
+    show_default=True,
+    help="Which CLI to use for changelog evaluation.",
+)
+@click.option("--model", help="Override model for the selected evaluator.")
 @click.option("--dry-run", is_flag=True, help="Print what would be done without writing entries.")
 @click.option("--limit", type=int, help="Maximum number of runs to process.")
-def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, limit):
+def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, dry_run, limit):
     """Backfill .changelog entries from existing ctx session output directories."""
     root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
 
@@ -4034,7 +4161,8 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, model, dry_run, li
                     source_match_json=source_match_path.resolve(),
                     prior_prompts=3,
                     actor=actor,
-                    codex_model=model,
+                    evaluator=evaluator,
+                    evaluator_model=model,
                     continuation_of_run_id=prev_run_id,
                     halt_on_429=True,
                 )

@@ -107,7 +107,7 @@ Changelog options:
 
 - `--changelog/--no-changelog`: enable/disable changelog generation (default can be set via `CTX_CHANGELOG=1` or `AI_CODE_SESSIONS_CHANGELOG=1`)
 - `--changelog-actor`: override `actor` (and therefore the output file under `.changelog/<actor>/entries.jsonl`)
-- `--changelog-model`: override Codex model used for changelog generation
+- `--changelog-model`: override Codex model used for changelog generation (default: `gpt-5.2` with `xhigh` reasoning)
 
 ### Claude-only commands (inherited)
 
@@ -124,6 +124,17 @@ Generate `.changelog/<actor>/entries.jsonl` entries from existing `ctx` output d
 ```bash
 ai-code-sessions changelog backfill --project-root "$(git rev-parse --show-toplevel)" --actor "your-github-username"
 ai-code-sessions changelog backfill --sessions-dir ./.codex/sessions --actor "your-github-username"
+```
+
+Backfill evaluation options:
+
+- `--evaluator codex|claude` (default: `codex`)
+- `--model TEXT`: override the evaluator model (Codex default: `gpt-5.2` + `xhigh`; Claude default: `opus` + max thinking)
+
+Example (use Claude Code CLI for evaluation):
+
+```bash
+ai-code-sessions changelog backfill --evaluator claude --model opus --actor "your-github-username"
 ```
 
 ## What the HTML includes

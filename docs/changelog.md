@@ -20,7 +20,7 @@ In the **session output directory** (for resume/backfill support):
 
 - `export_runs.jsonl` — records each export run window (`--start/--end`) for that session dir
 
-Internally, changelog generation runs `codex exec` in non-interactive mode and uses an isolated temporary `CODEX_HOME` so it doesn't need to write to your main `~/.codex` directory.
+Internally, changelog generation runs `codex exec` in non-interactive mode and uses an isolated temporary `CODEX_HOME` so it doesn't need to write to your main `~/.codex` directory. Backfill can optionally use Claude Code CLI (`claude`) as the evaluator instead.
 
 ## Enable it
 
@@ -62,3 +62,8 @@ Notes:
 - To keep entries low-noise and cheap to generate, the evaluator digest **does not include command output** unless a tool call is marked as an error (then a short tail is included for context).
 - If Codex reports a context window overflow, the evaluator retries once using a smaller “budget” digest.
 - If Codex returns a usage limit (`HTTP 429` / `usage_limit_reached`), backfill halts early so you can rerun later without generating a long list of failures.
+
+Backfill evaluator:
+
+- Default: Codex (`gpt-5.2`, `xhigh` reasoning)
+- Optional: Claude Code CLI (`opus`, max thinking)

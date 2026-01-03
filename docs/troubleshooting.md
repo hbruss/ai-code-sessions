@@ -42,6 +42,12 @@ codex --version
 codex login --help
 ```
 
+If you’re using `--evaluator claude`, also confirm Claude Code CLI is installed and logged in:
+
+```bash
+claude --version
+```
+
 Common causes:
 
 - `usage_limit_reached` / `HTTP 429`: you hit your Codex usage limit. Backfill halts early in this case; rerun after your usage resets.
