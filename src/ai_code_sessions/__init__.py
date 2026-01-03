@@ -972,6 +972,19 @@ def _env_truthy(name: str) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_first(*names: str) -> str | None:
+    for name in names:
+        if not name:
+            continue
+        val = os.environ.get(name)
+        if val is None:
+            continue
+        val = val.strip()
+        if val:
+            return val
+    return None
+
+
 def _slugify_actor(actor: str) -> str:
     if not isinstance(actor, str):
         return "unknown"
@@ -2030,6 +2043,7 @@ def _generate_and_append_changelog_entry(
     actor: str | None = None,
     evaluator: str = "codex",
     evaluator_model: str | None = None,
+    claude_max_thinking_tokens: int | None = None,
     continuation_of_run_id: str | None = None,
     halt_on_429: bool = False,
 ) -> tuple[bool, str | None, str]:
@@ -2089,6 +2103,7 @@ def _generate_and_append_changelog_entry(
                     json_schema=_CHANGELOG_CODEX_OUTPUT_SCHEMA,
                     cd=project_root,
                     model=evaluator_model,
+                    max_thinking_tokens=claude_max_thinking_tokens,
                 )
 
             try:
@@ -3875,10 +3890,20 @@ def find_source_cmd(tool, cwd, project_root, start, end, debug_json):
 @click.option(
     "--changelog/--no-changelog",
     default=_env_truthy("AI_CODE_SESSIONS_CHANGELOG") or _env_truthy("CTX_CHANGELOG"),
-    help="Append a .changelog/<actor>/entries.jsonl entry for this run (uses codex exec).",
+    help="Append a .changelog/<actor>/entries.jsonl entry for this run (best-effort).",
+)
+@click.option(
+    "--changelog-evaluator",
+    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    default=None,
+    show_default="codex",
+    help="Changelog evaluator to use (defaults to env CTX_CHANGELOG_EVALUATOR / AI_CODE_SESSIONS_CHANGELOG_EVALUATOR).",
 )
 @click.option("--changelog-actor", help="Override actor recorded in the changelog entry.")
-@click.option("--changelog-model", help="Override Codex model for changelog generation.")
+@click.option(
+    "--changelog-model",
+    help="Override model for changelog evaluation (defaults to env CTX_CHANGELOG_MODEL / AI_CODE_SESSIONS_CHANGELOG_MODEL).",
+)
 def export_latest_cmd(
     tool,
     cwd,
@@ -3891,6 +3916,7 @@ def export_latest_cmd(
     include_json,
     open_browser,
     changelog,
+    changelog_evaluator,
     changelog_actor,
     changelog_model,
 ):
@@ -3935,6 +3961,9 @@ def export_latest_cmd(
 
     changelog_run_id = None
     changelog_appended = None
+    changelog_evaluator_used = None
+    changelog_model_used = None
+    changelog_claude_thinking_tokens_used = None
     if changelog:
         source_jsonl_for_digest = json_dest or source_path
         actor_value = changelog_actor or _detect_actor(project_root=project_root_path)
@@ -3942,6 +3971,38 @@ def export_latest_cmd(
         entries_rel = f".changelog/{actor_slug}/entries.jsonl"
         failures_rel = f".changelog/{actor_slug}/failures.jsonl"
         try:
+            evaluator_value = (
+                (changelog_evaluator or "").strip()
+                or (_env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or "").strip()
+                or "codex"
+            ).lower()
+            model_value = (
+                (changelog_model or "").strip()
+                or (_env_first("CTX_CHANGELOG_MODEL", "AI_CODE_SESSIONS_CHANGELOG_MODEL") or "").strip()
+                or None
+            )
+            claude_tokens = None
+            if evaluator_value == "claude":
+                raw_tokens = _env_first(
+                    "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS",
+                    "AI_CODE_SESSIONS_CHANGELOG_CLAUDE_THINKING_TOKENS",
+                )
+                if raw_tokens:
+                    try:
+                        claude_tokens = int(raw_tokens)
+                    except ValueError:
+                        raise click.ClickException(
+                            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)"
+                        )
+                    if claude_tokens <= 0:
+                        raise click.ClickException(
+                            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer"
+                        )
+
+            changelog_evaluator_used = evaluator_value
+            changelog_model_used = model_value
+            changelog_claude_thinking_tokens_used = claude_tokens
+
             changelog_appended, changelog_run_id, changelog_status = _generate_and_append_changelog_entry(
                 tool=(tool or "unknown").lower(),
                 label=label,
@@ -3954,8 +4015,9 @@ def export_latest_cmd(
                 source_match_json=source_match_path.resolve(),
                 prior_prompts=3,
                 actor=actor_value,
-                evaluator="codex",
-                evaluator_model=changelog_model,
+                evaluator=evaluator_value,
+                evaluator_model=model_value,
+                claude_max_thinking_tokens=claude_tokens,
                 continuation_of_run_id=previous_run_id,
             )
             if changelog_appended and changelog_status == "appended":
@@ -3984,6 +4046,9 @@ def export_latest_cmd(
             "changelog_enabled": bool(changelog),
             "changelog_run_id": changelog_run_id,
             "changelog_appended": changelog_appended,
+            "changelog_evaluator": changelog_evaluator_used,
+            "changelog_model": changelog_model_used,
+            "changelog_claude_thinking_tokens": changelog_claude_thinking_tokens_used,
         },
     )
 
@@ -4022,6 +4087,19 @@ def changelog_cli():
 def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, dry_run, limit):
     """Backfill .changelog entries from existing ctx session output directories."""
     root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+
+    claude_tokens = None
+    raw_tokens = _env_first(
+        "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS",
+        "AI_CODE_SESSIONS_CHANGELOG_CLAUDE_THINKING_TOKENS",
+    )
+    if raw_tokens:
+        try:
+            claude_tokens = int(raw_tokens)
+        except ValueError:
+            raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)")
+        if claude_tokens <= 0:
+            raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
 
     halted = False
     if sessions_dir:
@@ -4163,6 +4241,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                     actor=actor,
                     evaluator=evaluator,
                     evaluator_model=model,
+                    claude_max_thinking_tokens=claude_tokens,
                     continuation_of_run_id=prev_run_id,
                     halt_on_429=True,
                 )

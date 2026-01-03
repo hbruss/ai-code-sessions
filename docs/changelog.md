@@ -41,6 +41,16 @@ ai-code-sessions export-latest ... --changelog
 
 Tip: set `CTX_ACTOR` / `CHANGELOG_ACTOR` (or pass `--changelog-actor`) so entries land in your own `.changelog/<actor>/...` files.
 
+### Evaluator overrides (optional)
+
+By default, changelog evaluation runs with Codex (`gpt-5.2`, `xhigh` reasoning). You can override this per-session:
+
+```bash
+export CTX_CHANGELOG_EVALUATOR="claude"   # or "codex"
+export CTX_CHANGELOG_MODEL="opus"        # model for the selected evaluator
+export CTX_CHANGELOG_CLAUDE_THINKING_TOKENS="8192"  # Claude-only (optional)
+```
+
 ## Backfill
 
 To generate entries for existing session output directories:

@@ -107,7 +107,8 @@ Changelog options:
 
 - `--changelog/--no-changelog`: enable/disable changelog generation (default can be set via `CTX_CHANGELOG=1` or `AI_CODE_SESSIONS_CHANGELOG=1`)
 - `--changelog-actor`: override `actor` (and therefore the output file under `.changelog/<actor>/entries.jsonl`)
-- `--changelog-model`: override Codex model used for changelog generation (default: `gpt-5.2` with `xhigh` reasoning)
+- `--changelog-evaluator codex|claude`: which CLI to use for changelog evaluation (default: `codex`)
+- `--changelog-model`: override the evaluator model (Codex default: `gpt-5.2` with `xhigh` reasoning; Claude default: `opus` with max thinking)
 
 ### Claude-only commands (inherited)
 

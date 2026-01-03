@@ -123,6 +123,13 @@ export CTX_ACTOR="your-github-username"
 export CTX_CHANGELOG=1
 ```
 
+Optional: override the changelog evaluator/model via env vars (see `docs/changelog.md`):
+
+```bash
+export CTX_CHANGELOG_EVALUATOR="claude"  # or "codex"
+export CTX_CHANGELOG_MODEL="opus"
+```
+
 ## Where the code lives
 
 `ctx` is currently implemented as a user-local script (outside this repo):
