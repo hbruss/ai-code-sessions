@@ -4789,6 +4789,45 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
     if evaluator_value == "claude" and max_concurrency_value > 1 and not dry_run:
         stop_event = threading.Event()
 
+        progress_enabled = (os.environ.get("CTX_CHANGELOG_PROGRESS") != "0") and sys.stderr.isatty()
+        progress_lock = threading.Lock()
+        completed_sessions = 0
+        processed_runs = 0
+        progress_started = time.monotonic()
+        progress_stop = threading.Event()
+        last_progress_len = 0
+
+        def _progress_clear() -> None:
+            nonlocal last_progress_len
+            if not progress_enabled:
+                return
+            try:
+                sys.stderr.write("\r" + (" " * last_progress_len) + "\r")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
+        def _progress_worker(total_sessions: int) -> None:
+            nonlocal last_progress_len
+            for ch in itertools.cycle("|/-\\"):
+                if progress_stop.wait(1.0):
+                    break
+                with progress_lock:
+                    done = completed_sessions
+                    runs_done = processed_runs
+                in_flight = max(0, total_sessions - done)
+                elapsed = _format_elapsed(time.monotonic() - progress_started)
+                line = (
+                    f"Backfill (claude, max_concurrency={max_concurrency_value}) "
+                    f"{ch} sessions={done}/{total_sessions} in_flight={in_flight} runs={runs_done} elapsed={elapsed}"
+                )
+                try:
+                    sys.stderr.write("\r" + line + (" " * max(0, last_progress_len - len(line))))
+                    sys.stderr.flush()
+                    last_progress_len = len(line)
+                except Exception:
+                    break
+
         def worker(base_tool_guess: str, session_dir: Path) -> tuple[int, bool, list[str]]:
             if stop_event.is_set():
                 return 0, False, []
@@ -4944,13 +4983,23 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         processed = 0
         prev_progress = os.environ.get("CTX_CHANGELOG_PROGRESS")
         os.environ["CTX_CHANGELOG_PROGRESS"] = "0"
+        progress_thread: threading.Thread | None = None
         try:
             futures = []
             with ThreadPoolExecutor(max_workers=max_concurrency_value) as ex:
                 futures = [ex.submit(worker, tool_guess, session_dir) for tool_guess, session_dir in session_jobs]
+                if progress_enabled and session_jobs:
+                    progress_thread = threading.Thread(
+                        target=_progress_worker, args=(len(session_jobs),), daemon=True
+                    )
+                    progress_thread.start()
                 for fut in as_completed(futures):
                     proc_count, halted_local, lines = fut.result()
+                    with progress_lock:
+                        completed_sessions += 1
+                        processed_runs += proc_count
                     processed += proc_count
+                    _progress_clear()
                     for line in lines:
                         click.echo(line)
                     if halted_local:
@@ -4960,6 +5009,10 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                                 f.cancel()
                         break
         finally:
+            progress_stop.set()
+            if progress_thread is not None:
+                progress_thread.join(timeout=2)
+            _progress_clear()
             if prev_progress is None:
                 os.environ.pop("CTX_CHANGELOG_PROGRESS", None)
             else:
