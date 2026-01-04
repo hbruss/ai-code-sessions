@@ -15,6 +15,7 @@ import threading
 import time
 import tomllib
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -35,6 +36,8 @@ _jinja_env = Environment(
 # Load macros template and expose macros
 _macros_template = _jinja_env.get_template("macros.html")
 _macros = _macros_template.module
+
+_JSONL_IO_LOCK = threading.Lock()
 
 
 def get_template(name):
@@ -898,9 +901,10 @@ def _compute_run_id(*, tool: str, start: str, end: str, session_dir: Path, sourc
 
 def _append_jsonl(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False))
-        f.write("\n")
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with _JSONL_IO_LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def _load_existing_run_ids(entries_path: Path) -> set[str]:
@@ -908,18 +912,19 @@ def _load_existing_run_ids(entries_path: Path) -> set[str]:
     if not entries_path.exists():
         return run_ids
     try:
-        with open(entries_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                run_id = obj.get("run_id")
-                if isinstance(run_id, str) and run_id:
-                    run_ids.add(run_id)
+        with _JSONL_IO_LOCK:
+            with open(entries_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    run_id = obj.get("run_id")
+                    if isinstance(run_id, str) and run_id:
+                        run_ids.add(run_id)
     except OSError:
         return run_ids
     return run_ids
@@ -2196,10 +2201,10 @@ def _looks_like_usage_limit_error(error_text: str) -> bool:
     return (
         "usage_limit_reached" in lower
         or "you've hit your usage limit" in lower
-        or "rate_limit" in lower
-        or "rate limit" in lower
         or "too many requests" in lower
         or re.search(r"\\b429\\b", lower) is not None
+        or re.search(r"\\brate_limit_(?:exceeded|reached|hit)\\b", lower) is not None
+        or re.search(r"\\brate[_ -]?limit(?:ed|\\s+(?:exceeded|reached|hit))\\b", lower) is not None
     )
 
 
@@ -2306,7 +2311,10 @@ def _generate_and_append_changelog_entry(
             except Exception as e:
                 # Some sessions are too large to fit in a single evaluator prompt.
                 # Retry once with a budgeted digest before recording a failure.
-                if _looks_like_context_window_error(str(e)):
+                if isinstance(e, subprocess.TimeoutExpired) or "timed out after" in str(e).lower():
+                    click.echo("Changelog eval timed out; retrying with budget digest...", err=True)
+                    evaluator_out = _run_eval(_budget_changelog_digest(digest, max_chars=100_000))
+                elif _looks_like_context_window_error(str(e)):
                     click.echo("Changelog eval too large; retrying with budget digest...", err=True)
                     evaluator_out = _run_eval(_budget_changelog_digest(digest))
                 else:
@@ -2370,6 +2378,7 @@ def _generate_and_append_changelog_entry(
         _append_jsonl(entries_path, entry)
         return True, run_id, "appended"
     except Exception as e:
+        error_text = _strip_digest_json_block(str(e))
         _write_changelog_failure(
             changelog_dir=changelog_dir,
             run_id=run_id,
@@ -2380,11 +2389,11 @@ def _generate_and_append_changelog_entry(
             session_dir=session_dir,
             start=start,
             end=end,
-            error=str(e),
+            error=error_text,
             source_jsonl=source_jsonl,
             source_match_json=source_match_json,
         )
-        if halt_on_429 and _looks_like_usage_limit_error(str(e)):
+        if halt_on_429 and _looks_like_usage_limit_error(error_text):
             return False, run_id, "rate_limited"
         return False, run_id, "failed"
 
@@ -4733,8 +4742,13 @@ def changelog_cli():
 )
 @click.option("--model", help="Override model for the selected evaluator.")
 @click.option("--dry-run", is_flag=True, help="Print what would be done without writing entries.")
+@click.option(
+    "--max-concurrency",
+    type=int,
+    help="Maximum number of concurrent evaluator runs (Claude evaluator only). Defaults to 5 for --evaluator claude.",
+)
 @click.option("--limit", type=int, help="Maximum number of runs to process.")
-def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, dry_run, limit):
+def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, dry_run, max_concurrency, limit):
     """Backfill .changelog entries from existing ctx session output directories."""
     root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
 
@@ -4751,12 +4765,211 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         if claude_tokens <= 0:
             raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
 
+    evaluator_value = (evaluator or "codex").strip().lower()
+    if evaluator_value not in ("codex", "claude"):
+        raise click.ClickException(f"Unknown evaluator: {evaluator}")
+
+    max_concurrency_value = max_concurrency
+    if max_concurrency_value is None:
+        max_concurrency_value = 5 if evaluator_value == "claude" else 1
+    if max_concurrency_value <= 0:
+        raise click.ClickException("--max-concurrency must be a positive integer")
+    if evaluator_value != "claude" and max_concurrency_value != 1:
+        raise click.ClickException("--max-concurrency is only supported with --evaluator claude")
+    if limit is not None and max_concurrency_value > 1:
+        raise click.ClickException("--limit is only supported with --max-concurrency 1")
+
     halted = False
     if sessions_dir:
         bases = [Path(p).expanduser() for p in sessions_dir]
         bases = [b if b.is_absolute() else (root / b) for b in bases]
     else:
         bases = [root / ".codex" / "sessions", root / ".claude" / "sessions"]
+
+    if evaluator_value == "claude" and max_concurrency_value > 1 and not dry_run:
+        stop_event = threading.Event()
+
+        def worker(base_tool_guess: str, session_dir: Path) -> tuple[int, bool, list[str]]:
+            if stop_event.is_set():
+                return 0, False, []
+
+            output_lines: list[str] = []
+            processed_local = 0
+            halted_local = False
+
+            export_runs_path = session_dir / "export_runs.jsonl"
+            source_match_path = session_dir / "source_match.json"
+            legacy_meta = _legacy_ctx_metadata(session_dir)
+
+            runs: list[dict] = []
+            if export_runs_path.exists():
+                runs = _read_jsonl_objects(export_runs_path)
+            else:
+                synthetic: dict = {}
+                if source_match_path.exists():
+                    try:
+                        synthetic_match = json.loads(source_match_path.read_text(encoding="utf-8"))
+                        best = synthetic_match.get("best") if isinstance(synthetic_match, dict) else {}
+                        if isinstance(best, dict):
+                            synthetic["start"] = best.get("start")
+                            synthetic["end"] = best.get("end")
+                            synthetic["tool"] = base_tool_guess
+                    except Exception:
+                        pass
+
+                # Legacy PTY sessions: infer timestamps and matching hints.
+                if legacy_meta:
+                    synthetic.setdefault("start", legacy_meta.get("start"))
+                    synthetic.setdefault("end", legacy_meta.get("end"))
+                    synthetic.setdefault("tool", legacy_meta.get("tool") or base_tool_guess)
+                    synthetic.setdefault("label", legacy_meta.get("label"))
+                    synthetic.setdefault("cwd", legacy_meta.get("cwd"))
+                    synthetic.setdefault("project_root", legacy_meta.get("project_root"))
+                    synthetic.setdefault("codex_resume_id", legacy_meta.get("codex_resume_id"))
+                runs = [synthetic]
+
+            prev_run_id = None
+            label_guess = _derive_label_from_session_dir(session_dir)
+
+            for run in runs:
+                if stop_event.is_set():
+                    break
+
+                start = run.get("start") if isinstance(run, dict) else None
+                end = run.get("end") if isinstance(run, dict) else None
+                tool = (run.get("tool") if isinstance(run, dict) else None) or base_tool_guess
+                label = (run.get("label") if isinstance(run, dict) else None) or label_guess
+                run_cwd = run.get("cwd") if isinstance(run, dict) else None
+                codex_resume_id = run.get("codex_resume_id") if isinstance(run, dict) else None
+
+                copied_jsonl = (
+                    Path(run.get("copied_jsonl")).expanduser()
+                    if isinstance(run, dict) and run.get("copied_jsonl")
+                    else None
+                )
+                if copied_jsonl and not copied_jsonl.is_absolute():
+                    copied_jsonl = (root / copied_jsonl).resolve()
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    # Prefer the copied file that matches source_match.json, if present.
+                    if source_match_path.exists():
+                        try:
+                            match_obj = json.loads(source_match_path.read_text(encoding="utf-8"))
+                            best = match_obj.get("best") if isinstance(match_obj, dict) else None
+                            best_path = best.get("path") if isinstance(best, dict) else None
+                            if isinstance(best_path, str) and best_path:
+                                candidate = session_dir / Path(best_path).name
+                                if candidate.exists():
+                                    copied_jsonl = candidate
+                        except Exception:
+                            pass
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    copied_jsonl = _choose_copied_jsonl_for_session_dir(session_dir)
+
+                if copied_jsonl is None or not copied_jsonl.exists():
+                    copied_jsonl = _maybe_copy_native_jsonl_into_legacy_session_dir(
+                        tool=(tool or "unknown").lower(),
+                        session_dir=session_dir,
+                        start=start,
+                        end=end,
+                        cwd=run_cwd or (legacy_meta.get("cwd") if legacy_meta else None),
+                        codex_resume_id=codex_resume_id or (legacy_meta.get("codex_resume_id") if legacy_meta else None),
+                    )
+
+                if (not start or not end) and copied_jsonl and copied_jsonl.exists():
+                    # Last-resort: infer run bounds from copied JSONL boundaries.
+                    if tool == "codex":
+                        sdt, edt, _, _ = _codex_rollout_session_times(copied_jsonl)
+                    else:
+                        sdt, edt, _, _ = _claude_session_times(copied_jsonl)
+                    if sdt and edt:
+                        start = start or sdt.isoformat()
+                        end = end or edt.isoformat()
+
+                if not start or not end or copied_jsonl is None or not copied_jsonl.exists():
+                    output_lines.append(f"Backfill: skipping {session_dir} (missing timestamps or JSONL)")
+                    continue
+
+                appended, run_id, status = _generate_and_append_changelog_entry(
+                    tool=(tool or "unknown").lower(),
+                    label=label,
+                    cwd=str(root),
+                    project_root=root,
+                    session_dir=session_dir,
+                    start=start,
+                    end=end,
+                    source_jsonl=copied_jsonl.resolve(),
+                    source_match_json=source_match_path.resolve(),
+                    prior_prompts=3,
+                    actor=actor,
+                    evaluator=evaluator_value,
+                    evaluator_model=model,
+                    claude_max_thinking_tokens=claude_tokens,
+                    continuation_of_run_id=prev_run_id,
+                    halt_on_429=True,
+                )
+                prev_run_id = run_id
+                processed_local += 1
+                if status == "rate_limited":
+                    output_lines.append(
+                        f"Backfill: halted (usage limit reached) run_id={run_id} ({session_dir.name})"
+                    )
+                    halted_local = True
+                    stop_event.set()
+                    break
+                elif status == "exists":
+                    output_lines.append(
+                        f"Backfill: skipped (already exists) run_id={run_id} ({session_dir.name})"
+                    )
+                elif status == "failed":
+                    output_lines.append(f"Backfill: failed run_id={run_id} ({session_dir.name})")
+                else:
+                    output_lines.append(f"Backfill: appended run_id={run_id} ({session_dir.name})")
+
+            return processed_local, halted_local, output_lines
+
+        session_jobs: list[tuple[str, Path]] = []
+        for base in bases:
+            if not base.exists():
+                continue
+            tool_guess = "unknown"
+            if base.parent.name == ".codex":
+                tool_guess = "codex"
+            elif base.parent.name == ".claude":
+                tool_guess = "claude"
+            session_dirs = [p for p in base.iterdir() if p.is_dir()]
+            session_dirs.sort(key=lambda p: p.name)
+            for session_dir in session_dirs:
+                session_jobs.append((tool_guess, session_dir))
+
+        processed = 0
+        prev_progress = os.environ.get("CTX_CHANGELOG_PROGRESS")
+        os.environ["CTX_CHANGELOG_PROGRESS"] = "0"
+        try:
+            futures = []
+            with ThreadPoolExecutor(max_workers=max_concurrency_value) as ex:
+                futures = [ex.submit(worker, tool_guess, session_dir) for tool_guess, session_dir in session_jobs]
+                for fut in as_completed(futures):
+                    proc_count, halted_local, lines = fut.result()
+                    processed += proc_count
+                    for line in lines:
+                        click.echo(line)
+                    if halted_local:
+                        halted = True
+                        for f in futures:
+                            if not f.done():
+                                f.cancel()
+                        break
+        finally:
+            if prev_progress is None:
+                os.environ.pop("CTX_CHANGELOG_PROGRESS", None)
+            else:
+                os.environ["CTX_CHANGELOG_PROGRESS"] = prev_progress
+
+        if halted:
+            click.echo(f"Backfill halted: processed {processed} run(s).")
+        else:
+            click.echo(f"Backfill complete: processed {processed} run(s).")
+        return
 
     processed = 0
     for base in bases:
@@ -4889,7 +5102,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                     source_match_json=source_match_path.resolve(),
                     prior_prompts=3,
                     actor=actor,
-                    evaluator=evaluator,
+                    evaluator=evaluator_value,
                     evaluator_model=model,
                     claude_max_thinking_tokens=claude_tokens,
                     continuation_of_run_id=prev_run_id,
