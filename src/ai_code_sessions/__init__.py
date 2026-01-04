@@ -38,6 +38,7 @@ _macros_template = _jinja_env.get_template("macros.html")
 _macros = _macros_template.module
 
 _JSONL_IO_LOCK = threading.Lock()
+_LOG_IO_LOCK = threading.Lock()
 
 
 def get_template(name):
@@ -1872,6 +1873,40 @@ def _format_elapsed(seconds: float) -> str:
     if hours:
         return f"{hours}:{mins:02d}:{secs:02d}"
     return f"{mins}:{secs:02d}"
+
+
+def _append_log_line(path: Path | None, message: str) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    ts = _now_iso8601()
+    line = f"{ts} {message.strip()}\n"
+    try:
+        with _LOG_IO_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError:
+        return
+
+
+def _backfill_log_path(*, project_root: Path, actor: str | None, evaluator: str) -> Path | None:
+    raw_dir = _env_first("CTX_LOG_DIR", "AI_CODE_SESSIONS_LOG_DIR")
+    if isinstance(raw_dir, str) and raw_dir.strip():
+        if raw_dir.strip().lower() in ("0", "false", "none", "off"):
+            return None
+        base = Path(raw_dir.strip()).expanduser()
+        if not base.is_absolute():
+            base = (project_root / base).resolve()
+        log_dir = base
+    else:
+        log_dir = project_root / ".logs" / "ai-code-sessions"
+
+    actor_slug = _slugify_actor(actor or _detect_actor(project_root=project_root))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return log_dir / f"changelog-backfill-{actor_slug}-{evaluator}-{stamp}.log"
 
 
 def _run_with_activity_indicator(*, label: str, fn, interval_seconds: float = 1.0):
@@ -4769,6 +4804,10 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
     if evaluator_value not in ("codex", "claude"):
         raise click.ClickException(f"Unknown evaluator: {evaluator}")
 
+    backfill_log = _backfill_log_path(project_root=root, actor=actor, evaluator=evaluator_value)
+    if backfill_log is not None and not dry_run:
+        click.echo(f"Backfill log: {backfill_log}", err=True)
+
     max_concurrency_value = max_concurrency
     if max_concurrency_value is None:
         max_concurrency_value = 5 if evaluator_value == "claude" else 1
@@ -4786,10 +4825,17 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
     else:
         bases = [root / ".codex" / "sessions", root / ".claude" / "sessions"]
 
+    _append_log_line(
+        backfill_log if not dry_run else None,
+        f"backfill_start project_root={root} evaluator={evaluator_value} model={model or ''} "
+        f"actor={actor or ''} sessions_dir={[str(b) for b in bases]} max_concurrency={max_concurrency_value}",
+    )
+
     if evaluator_value == "claude" and max_concurrency_value > 1 and not dry_run:
         stop_event = threading.Event()
 
-        progress_enabled = (os.environ.get("CTX_CHANGELOG_PROGRESS") != "0") and sys.stderr.isatty()
+        progress_enabled = os.environ.get("CTX_CHANGELOG_PROGRESS") != "0"
+        progress_tty = sys.stderr.isatty()
         progress_lock = threading.Lock()
         completed_sessions = 0
         processed_runs = 0
@@ -4799,7 +4845,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 
         def _progress_clear() -> None:
             nonlocal last_progress_len
-            if not progress_enabled:
+            if not progress_enabled or not progress_tty:
                 return
             try:
                 sys.stderr.write("\r" + (" " * last_progress_len) + "\r")
@@ -4810,7 +4856,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         def _progress_worker(total_sessions: int) -> None:
             nonlocal last_progress_len
             for ch in itertools.cycle("|/-\\"):
-                if progress_stop.wait(1.0):
+                if progress_stop.wait(1.0 if progress_tty else 30.0):
                     break
                 with progress_lock:
                     done = completed_sessions
@@ -4822,9 +4868,13 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                     f"{ch} sessions={done}/{total_sessions} in_flight={in_flight} runs={runs_done} elapsed={elapsed}"
                 )
                 try:
-                    sys.stderr.write("\r" + line + (" " * max(0, last_progress_len - len(line))))
-                    sys.stderr.flush()
-                    last_progress_len = len(line)
+                    if progress_tty:
+                        sys.stderr.write("\r" + line + (" " * max(0, last_progress_len - len(line))))
+                        sys.stderr.flush()
+                        last_progress_len = len(line)
+                    else:
+                        sys.stderr.write(line + "\n")
+                        sys.stderr.flush()
                 except Exception:
                     break
 
@@ -4835,6 +4885,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
             output_lines: list[str] = []
             processed_local = 0
             halted_local = False
+            _append_log_line(backfill_log, f"session_start path={session_dir}")
 
             export_runs_path = session_dir / "export_runs.jsonl"
             source_match_path = session_dir / "source_match.json"
@@ -4926,8 +4977,13 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 
                 if not start or not end or copied_jsonl is None or not copied_jsonl.exists():
                     output_lines.append(f"Backfill: skipping {session_dir} (missing timestamps or JSONL)")
+                    _append_log_line(backfill_log, f"skip_missing path={session_dir}")
                     continue
 
+                _append_log_line(
+                    backfill_log,
+                    f"run_start session={session_dir.name} tool={tool} start={start} end={end} jsonl={copied_jsonl}",
+                )
                 appended, run_id, status = _generate_and_append_changelog_entry(
                     tool=(tool or "unknown").lower(),
                     label=label,
@@ -4952,6 +5008,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                     output_lines.append(
                         f"Backfill: halted (usage limit reached) run_id={run_id} ({session_dir.name})"
                     )
+                    _append_log_line(backfill_log, f"run_done status=rate_limited run_id={run_id} session={session_dir}")
                     halted_local = True
                     stop_event.set()
                     break
@@ -4959,11 +5016,15 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                     output_lines.append(
                         f"Backfill: skipped (already exists) run_id={run_id} ({session_dir.name})"
                     )
+                    _append_log_line(backfill_log, f"run_done status=exists run_id={run_id} session={session_dir}")
                 elif status == "failed":
                     output_lines.append(f"Backfill: failed run_id={run_id} ({session_dir.name})")
+                    _append_log_line(backfill_log, f"run_done status=failed run_id={run_id} session={session_dir}")
                 else:
                     output_lines.append(f"Backfill: appended run_id={run_id} ({session_dir.name})")
+                    _append_log_line(backfill_log, f"run_done status=appended run_id={run_id} session={session_dir}")
 
+            _append_log_line(backfill_log, f"session_done path={session_dir} processed_runs={processed_local}")
             return processed_local, halted_local, output_lines
 
         session_jobs: list[tuple[str, Path]] = []
@@ -5019,8 +5080,10 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                 os.environ["CTX_CHANGELOG_PROGRESS"] = prev_progress
 
         if halted:
+            _append_log_line(backfill_log, f"backfill_done status=halted processed={processed}")
             click.echo(f"Backfill halted: processed {processed} run(s).")
         else:
+            _append_log_line(backfill_log, f"backfill_done status=complete processed={processed}")
             click.echo(f"Backfill complete: processed {processed} run(s).")
         return
 

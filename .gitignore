@@ -28,6 +28,7 @@ htmlcov/
 .codex/sessions/*
 .claude/sessions/*
 .changelog/
+.logs/
 .tmp/
 .archive/
 
