@@ -27,6 +27,7 @@ htmlcov/
 # Codex sessions and local scratch
 .codex/sessions/*
 .claude/sessions/*
+.changelog/
 .tmp/
 .archive/
 
