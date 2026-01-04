@@ -2492,7 +2492,16 @@ def _generate_and_append_changelog_entry(
         return False, run_id, "exists"
 
     try:
-        digest = _build_changelog_digest(
+        module_override = sys.modules.get("ai_code_sessions")
+        build_digest = _build_changelog_digest
+        run_codex_eval = _run_codex_changelog_evaluator
+        run_claude_eval = _run_claude_changelog_evaluator
+        if module_override is not None:
+            build_digest = getattr(module_override, "_build_changelog_digest", build_digest)
+            run_codex_eval = getattr(module_override, "_run_codex_changelog_evaluator", run_codex_eval)
+            run_claude_eval = getattr(module_override, "_run_claude_changelog_evaluator", run_claude_eval)
+
+        digest = build_digest(
             source_jsonl=source_jsonl,
             start=start,
             end=end,
@@ -2517,7 +2526,7 @@ def _generate_and_append_changelog_entry(
                         raise click.ClickException("Internal error: missing Codex schema path")
                     return _run_with_activity_indicator(
                         label=activity_label,
-                        fn=lambda: _run_codex_changelog_evaluator(
+                        fn=lambda: run_codex_eval(
                             prompt=prompt,
                             schema_path=schema_path,
                             cd=project_root,
@@ -2526,7 +2535,7 @@ def _generate_and_append_changelog_entry(
                     )
                 return _run_with_activity_indicator(
                     label=activity_label,
-                    fn=lambda: _run_claude_changelog_evaluator(
+                    fn=lambda: run_claude_eval(
                         prompt=prompt,
                         json_schema=_CHANGELOG_CODEX_OUTPUT_SCHEMA,
                         cd=project_root,
