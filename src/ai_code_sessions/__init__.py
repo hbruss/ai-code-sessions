@@ -2237,9 +2237,13 @@ def _looks_like_usage_limit_error(error_text: str) -> bool:
         "usage_limit_reached" in lower
         or "you've hit your usage limit" in lower
         or "too many requests" in lower
-        or re.search(r"\\b429\\b", lower) is not None
-        or re.search(r"\\brate_limit_(?:exceeded|reached|hit)\\b", lower) is not None
-        or re.search(r"\\brate[_ -]?limit(?:ed|\\s+(?:exceeded|reached|hit))\\b", lower) is not None
+        or "rate_limit_exceeded" in lower
+        or "rate_limit_reached" in lower
+        or "rate_limit_hit" in lower
+        or "rate limit exceeded" in lower
+        or "rate limit reached" in lower
+        or "rate limit hit" in lower
+        or ("429" in re.findall(r"[0-9]+", lower))
     )
 
 
@@ -2516,6 +2520,158 @@ def _read_legacy_ctx_events_first(session_dir: Path) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _legacy_ctx_first_user_input_from_events(session_dir: Path) -> str | None:
+    path = session_dir / "events.jsonl"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("type") != "user_input":
+                    continue
+                txt = obj.get("line")
+                if isinstance(txt, str) and txt.strip():
+                    return txt.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _legacy_ctx_first_user_input_from_transcript_md(session_dir: Path) -> str | None:
+    path = session_dir / "transcript.md"
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    start_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## You":
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        return None
+
+    buf: list[str] = []
+    for line in lines[start_idx:]:
+        if line.startswith("## ") and line.strip() != "## You":
+            break
+        buf.append(line)
+    text = "\n".join(buf).strip()
+    return text or None
+
+
+def _legacy_ctx_started_from_transcript_md(session_dir: Path) -> str | None:
+    path = session_dir / "transcript.md"
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("- Started:"):
+                started = line.split(":", 1)[1].strip()
+                return started or None
+    except OSError:
+        return None
+    return None
+
+
+def _normalize_search_text(text: str) -> str:
+    return " ".join((text or "").split()).strip()
+
+
+def _prompt_search_needles(prompt_text: str) -> list[str]:
+    prompt_text = prompt_text or ""
+    needles: list[str] = []
+    for m in re.findall(r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.md", prompt_text):
+        if 10 <= len(m) <= 240:
+            needles.append(m)
+    normalized = _normalize_search_text(prompt_text)
+    if normalized:
+        needles.append(normalized[:160])
+    out: list[str] = []
+    seen = set()
+    for n in needles:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _find_codex_rollout_by_prompt(
+    *,
+    prompt_text: str,
+    start_dt: datetime,
+    cwd: str | None,
+    max_candidates: int = 200,
+) -> Path | None:
+    base = _user_codex_sessions_dir()
+    if not base.exists():
+        return None
+
+    needles = _prompt_search_needles(prompt_text)
+    if not needles:
+        return None
+
+    candidates: list[Path] = []
+    for d in _candidate_codex_day_dirs(base, start_dt, start_dt):
+        if not d.exists():
+            continue
+        candidates.extend([p for p in d.glob("rollout-*.jsonl") if p.is_file()])
+        if len(candidates) >= max_candidates:
+            break
+
+    if not candidates:
+        try:
+            for p in base.rglob("rollout-*.jsonl"):
+                if p.is_file():
+                    candidates.append(p)
+                if len(candidates) >= max_candidates:
+                    break
+        except Exception:
+            return None
+
+    best: Path | None = None
+    best_score: float | None = None
+    for path in candidates:
+        sess_start, _, sess_cwd, _ = _codex_rollout_session_times(path)
+        if cwd and sess_cwd and not _same_path(sess_cwd, cwd):
+            continue
+
+        matched = False
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    for needle in needles:
+                        if needle and needle in line:
+                            matched = True
+                            break
+                    if matched:
+                        break
+        except OSError:
+            continue
+
+        if not matched:
+            continue
+
+        score = abs(((sess_start or start_dt) - start_dt).total_seconds())
+        if best_score is None or score < best_score:
+            best_score = score
+            best = path
+
+    return best
+
+
 def _extract_codex_resume_id_from_legacy_messages(messages_obj: dict) -> str | None:
     messages = messages_obj.get("messages")
     if not isinstance(messages, list):
@@ -2661,12 +2817,29 @@ def _maybe_copy_native_jsonl_into_legacy_session_dir(
     if tool != "codex":
         return None
 
-    if not start or not end:
+    # Fill missing metadata from legacy artifacts when possible.
+    events_first = _read_legacy_ctx_events_first(session_dir)
+    if not cwd and isinstance(events_first, dict):
+        ev_cwd = events_first.get("cwd")
+        if isinstance(ev_cwd, str) and ev_cwd.strip():
+            cwd = ev_cwd.strip()
+    if not start and isinstance(events_first, dict):
+        ev_start = events_first.get("ts")
+        if isinstance(ev_start, str) and ev_start.strip():
+            start = ev_start.strip()
+    if not end:
+        last = _read_last_jsonl_object(session_dir / "events.jsonl")
+        ev_end = last.get("ts") if isinstance(last, dict) else None
+        if isinstance(ev_end, str) and ev_end.strip():
+            end = ev_end.strip()
+    if not start:
+        start = _legacy_ctx_started_from_transcript_md(session_dir)
+
+    start_dt = _parse_iso8601(start) if start else None
+    end_dt = _parse_iso8601(end) if end else None
+    if start_dt is None:
         return None
-    start_dt = _parse_iso8601(start)
-    end_dt = _parse_iso8601(end)
-    if start_dt is None or end_dt is None:
-        return None
+    end_dt = end_dt or start_dt
 
     src: Path | None = None
     if codex_resume_id:
@@ -2683,6 +2856,12 @@ def _maybe_copy_native_jsonl_into_legacy_session_dir(
             src = Path(match["best"]["path"])
         except Exception:
             src = None
+
+    if src is None or not src.exists():
+        # Fallback: locate rollout by searching for the first user prompt in the transcript.
+        prompt_text = _legacy_ctx_first_user_input_from_events(session_dir) or _legacy_ctx_first_user_input_from_transcript_md(session_dir)
+        if prompt_text:
+            src = _find_codex_rollout_by_prompt(prompt_text=prompt_text, start_dt=start_dt, cwd=cwd)
 
     if src is None or not src.exists():
         return None
