@@ -136,11 +136,12 @@ Backfill evaluation options:
 
 - `--evaluator codex|claude` (default: `codex`)
 - `--model TEXT`: override the evaluator model (Codex default: `gpt-5.2` + `xhigh`; Claude default: `opus` + max thinking)
+- `--max-concurrency INT`: max concurrent evaluator runs (Claude evaluator only; default: 5). Use `--max-concurrency 1` if you want to pair with `--limit`.
 
 Example (use Claude Code CLI for evaluation):
 
 ```bash
-ai-code-sessions changelog backfill --evaluator claude --model opus --actor "your-github-username"
+ai-code-sessions changelog backfill --evaluator claude --model opus --max-concurrency 5 --actor "your-github-username"
 ```
 
 ## What the HTML includes

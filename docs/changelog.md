@@ -88,10 +88,15 @@ Notes:
 - If `export_runs.jsonl` is present, backfill can generate **delta-only** entries for resumed sessions.
 - Without it, backfill will create a best-effort single entry per session directory.
 - To keep entries low-noise and cheap to generate, the evaluator digest **does not include command output** unless a tool call is marked as an error (then a short tail is included for context).
-- If Codex reports a context window overflow, the evaluator retries once using a smaller “budget” digest.
-- If Codex returns a usage limit (`HTTP 429` / `usage_limit_reached`), backfill halts early so you can rerun later without generating a long list of failures.
+- If the evaluator reports a context window overflow (or Claude times out), the evaluator retries once using a smaller “budget” digest.
+- If the evaluator returns a usage/rate limit (`HTTP 429` / `usage_limit_reached`), backfill halts early so you can rerun later without generating a long list of failures.
 
 Backfill evaluator:
 
 - Default: Codex (`gpt-5.2`, `xhigh` reasoning)
 - Optional: Claude Code CLI (`opus`, max thinking)
+
+Claude concurrency:
+
+- When using `--evaluator claude`, backfill runs up to 5 evaluations concurrently by default.
+- Override with `--max-concurrency N` (and use `--max-concurrency 1` if you need `--limit`).
