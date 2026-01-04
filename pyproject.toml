@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "Convert Codex and Claude Code session logs to HTML transcripts"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Russ Ronchi" },
     { name = "Simon Willison" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "click",
     "click-default-group",
@@ -19,10 +20,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/simonw/claude-code-transcripts"
+Homepage = "https://github.com/hbruss/ai-code-sessions"
+Upstream = "https://github.com/simonw/claude-code-transcripts"
 
 [project.scripts]
 ai-code-sessions = "ai_code_sessions:main"
+ais = "ai_code_sessions:main"
 ai-code-transcripts = "ai_code_sessions:main"
 
 [build-system]

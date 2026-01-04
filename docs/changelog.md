@@ -5,15 +5,15 @@
 The changelog is designed to be:
 
 - **Append-only** (JSONL)
-- **Committable** (lives in your project repo)
+- **Committable (opt-in)** — lives in your project repo, but you may want to ignore it by default
 - **Searchable** (easy to `rg` by file path, tag, or phrasing)
 - **Low-noise** (paraphrased context, links back to the full transcript)
 
 ## Where it writes
 
-In the **project repo** you ran `ctx` in:
+In the **project repo** you ran `ais ctx` in:
 
-- `.changelog/<actor>/entries.jsonl` — one JSON object per `ctx` exit (per actor)
+- `.changelog/<actor>/entries.jsonl` — one JSON object per `ais ctx` exit (per actor)
 - `.changelog/<actor>/failures.jsonl` — best-effort failure log (export remains successful)
 
 In the **session output directory** (for resume/backfill support):
@@ -24,13 +24,31 @@ Internally, changelog generation runs `codex exec` in non-interactive mode and u
 
 ## Enable it
 
-### With `ctx`
+### With `ais ctx`
 
 Set an actor (recommended: your GitHub username) and enable changelog generation:
 
 ```bash
 export CTX_ACTOR="your-github-username"
 export CTX_CHANGELOG=1
+```
+
+Tip: if you don’t want these files committed (recommended for public repos), add `.changelog/` to your project’s `.gitignore`.
+
+### With config
+
+Run the setup wizard:
+
+```bash
+ais setup
+```
+
+Or create a per-repo config (see `docs/config.md`):
+
+```toml
+[changelog]
+enabled = true
+actor = "your-github-username"
 ```
 
 ### With the CLI

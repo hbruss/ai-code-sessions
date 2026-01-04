@@ -13,7 +13,7 @@ Practical guidance:
 
 - Assume `index.html`, `page-*.html`, and the copied JSON/JSONL source file can contain secrets.
 - Avoid sharing transcripts outside your machine unless you’ve reviewed/redacted them.
-- Consider adding `.codex/` and `.claude/` to `.gitignore` in repos where you use `ctx`, so transcripts don’t get committed accidentally.
+- Consider adding `.codex/`, `.claude/`, and `.changelog/` to `.gitignore` in repos where you use `ais ctx`, so artifacts don’t get committed accidentally.
 
 ## Gist publishing
 

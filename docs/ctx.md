@@ -1,141 +1,70 @@
-# `ctx` wrapper (Codex + Claude)
+# `ais ctx` (Codex + Claude)
 
-## Goals
+`ais ctx` runs Codex CLI or Claude Code CLI **normally** (no PTY screen-scraping), then exports the matching native JSONL session log into a per-repo directory with paginated HTML.
 
-- Preserve Codex/Claude CLI rendering (colors, interactive UI) by **not** screen-scraping.
-- Still produce per-repo, searchable, human-friendly session artifacts on exit:
-  - Named directory (timestamp + label) inside the repo
-  - Paginated HTML transcript (Simon-style)
-  - Copy of the original native JSONL log file for archival
-  - Debug info showing how the source log file was chosen
+## Install
 
-## What changed (high level)
+```bash
+pipx install ai-code-sessions
+pipx ensurepath
+```
 
-`ctx` now has two modes depending on the tool:
+## Usage
 
-1. **Codex / Claude**
-   - Runs the CLI **normally** (no PTY transcription).
-   - On exit, exports HTML transcript from the native JSONL logs using `ai-code-sessions export-latest`.
+Start a labeled session:
 
-2. **Other tools (`--tool …`)**
-   - Keeps the old PTY transcription logger behavior (writes `events.jsonl`, `transcript.md`, etc.).
+```bash
+ais ctx "Fix checkout race condition" --codex
+ais ctx "Investigate flaky CI tests" --claude
+```
+
+Pass-through arguments are forwarded to the underlying CLI (resume/continue included):
+
+```bash
+ais ctx "My label" --codex resume
+ais ctx "My label" --codex resume <session-id>
+
+ais ctx "My label" --claude --continue
+ais ctx "My label" --claude --resume <session-id>
+```
+
+Notes:
+
+- On resume/continue, `ais ctx` tries to reuse the previous session directory (by label, and session ID when provided) so the transcript is updated in-place.
+- If Claude is invoked with `--fork-session`, it’s treated as a new session (new output directory).
 
 ## Output directories
 
-When you run `ctx "My title" --codex` in a repo, it writes to:
+- Codex:  `<repo-root>/.codex/sessions/<STAMP>_<SANITIZED_LABEL>[_N]/`
+- Claude: `<repo-root>/.claude/sessions/<STAMP>_<SANITIZED_LABEL>[_N]/`
 
-`<repo-root>/.codex/sessions/<STAMP>_<SANITIZED_TITLE>[_N]/`
+`STAMP` defaults to Pacific time (`America/Los_Angeles`) unless overridden by config or `CTX_TZ`.
 
-When you run `ctx "My title" --claude`, it writes to:
+## Artifacts generated
 
-`<repo-root>/.claude/sessions/<STAMP>_<SANITIZED_TITLE>[_N]/`
+Each output directory includes:
 
-Notes:
-
-- `STAMP` defaults to Pacific time (`America/Los_Angeles`) unless `CTX_TZ` is set.
-- If a directory already exists (common with concurrent sessions), `ctx` appends `_<N>` to avoid collisions.
-
-### Important: exporter location vs. output location
-
-The exporter project (this repo) can live anywhere on disk.
-
-The output directory is always created inside **the repo you run `ctx` in** (resolved via `git rev-parse --show-toplevel`).
-
-Example:
-
-- Exporter lives at: `/anywhere/ai-code-sessions`
-- You run `ctx "Fix checkout" --codex` inside: `/work/ShopRepo`
-- Output goes to: `/work/ShopRepo/.codex/sessions/..._Fix_checkout/`
-
-## Artifacts generated (Codex/Claude)
-
-For Codex/Claude sessions, `ctx` generates:
-
-- `index.html` — transcript index page
-- `page-001.html`, `page-002.html`, … — paginated transcript pages
-- `source_match.json` — which native JSONL file was selected and why (top candidates)
-- `rollout-*.jsonl` (Codex) or `<uuid>.jsonl` (Claude) — copied native log file (archival)
-
-## Resume / continue
-
-Both Codex and Claude can resume an existing conversation. `ctx` supports this and will try to **reuse the previous session directory** (so the transcript gets updated in-place instead of creating a new timestamped folder every time).
-
-### Codex
-
-```bash
-ctx "My label" --codex resume
-ctx "My label" --codex resume <session-id>
-```
-
-### Claude Code
-
-```bash
-ctx "My label" --claude --continue
-ctx "My label" --claude --resume <session-id>
-```
-
-Notes:
-
-- On resume/continue, `ctx` tries to find the previous session directory by label (and session ID if provided) and writes the updated `index.html`/`page-*.html` there.
-- If `claude --fork-session` is used, `ctx` treats it as a new session and creates a new output directory.
-
-## `ctx open`
-
-`ctx open --latest-codex` and `ctx open --latest-claude` now prefer:
-
-1. `index.html` (new transcript)
-2. fallback to `trace.html` (legacy PTY export sessions)
-
-`ctx open --latest-*` looks under the **current repo’s** `.codex/sessions` or `.claude/sessions`, so run it from within the repo you care about (or pass the session directory explicitly).
+- `index.html`, `page-*.html` — transcript pages
+- `source_match.json` — why the source JSONL was selected (candidates + scoring)
+- copied native JSONL (`rollout-*.jsonl` for Codex or `<uuid>.jsonl` for Claude)
+- `export_runs.jsonl` — export metadata (used for resumable backfills)
 
 ## Configuration
 
-### Where the exporter project lives
+Run `ais setup` to write:
 
-`ctx` needs to know where the `ai-code-sessions` project directory is so it can run:
+- Global config: OS-specific user config dir
+- Per-repo config: `<repo-root>/.ai-code-sessions.toml` (or `.ais.toml`)
 
-`uv run --project <path> ai-code-sessions …`
+Environment variables override config:
 
-By default it assumes:
+- `CTX_TZ`, `CTX_CODEX_CMD`, `CTX_CLAUDE_CMD`
+- `CTX_CHANGELOG`, `CTX_ACTOR`, `CTX_CHANGELOG_EVALUATOR`, `CTX_CHANGELOG_MODEL`, `CTX_CHANGELOG_CLAUDE_THINKING_TOKENS`
 
-`$HOME/Projects/ai-code-sessions`
+## Optional: shell alias
 
-If your clone lives somewhere else, set this once in your shell profile:
-
-```bash
-export CTX_TRANSCRIPTS_PROJECT="/absolute/path/to/ai-code-sessions"
-```
-
-### Time zone for the session folder name
+If you prefer typing `ctx`:
 
 ```bash
-export CTX_TZ="America/Los_Angeles"
+alias ctx='ais ctx'
 ```
-
-### Enable changelog generation
-
-`ai-code-sessions` can append an entry to `.changelog/<actor>/entries.jsonl` after each export (see `docs/changelog.md`).
-
-Enable this for `ctx` runs by setting:
-
-```bash
-export CTX_ACTOR="your-github-username"
-export CTX_CHANGELOG=1
-```
-
-Optional: override the changelog evaluator/model via env vars (see `docs/changelog.md`):
-
-```bash
-export CTX_CHANGELOG_EVALUATOR="claude"  # or "codex"
-export CTX_CHANGELOG_MODEL="opus"
-```
-
-## Where the code lives
-
-`ctx` is currently implemented as a user-local script (outside this repo):
-
-- `/Users/russronchi/bin/ctx.sh`
-
-Any time we change it, we create a timestamped backup next to it (example):
-
-- `/Users/russronchi/bin/ctx.sh.bak-20260102-010800`

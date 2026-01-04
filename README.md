@@ -14,7 +14,7 @@ What I've added on top:
 
 - **Codex CLI support** (in addition to Claude Code)
 - **Automatic source matching** for finding the right log file when running concurrent sessions
-- **A `ctx` wrapper** for naming sessions and organizing exports by project
+- **An `ais ctx` workflow** for naming sessions and organizing exports by project
 - **An append-only changelog system** for generating structured summaries
 
 But the rendering engine—the part that makes the HTML output look good—that's Simon's contribution. If you find the transcripts beautiful and readable, credit goes to him. My additions are plumbing around the edges.
@@ -84,42 +84,45 @@ This creates a machine-readable history of AI-assisted work—perfect for feedin
 
 ## Usage
 
-### The `ctx` Wrapper (Recommended)
+### Install (recommended)
 
-If you use the `ctx.sh` wrapper script, point it at this repo:
-
-```bash
-export CTX_TRANSCRIPTS_PROJECT="/path/to/ai-code-sessions"
-export CTX_ACTOR="your-github-username"
-export CTX_CHANGELOG=1
-```
-
-Then start sessions with natural-language labels:
+Install the CLI with `pipx`:
 
 ```bash
-ctx "Fix the checkout race condition" --codex
-ctx "Investigate flaky CI tests" --claude
+pipx install ai-code-sessions
+pipx ensurepath
 ```
 
-When you quit, `ctx` automatically:
+Optional: run the interactive setup wizard (writes global/per-repo config and can update `.gitignore`):
+
+```bash
+ais setup
+```
+
+### `ais ctx` (recommended workflow)
+
+Start sessions with natural-language labels:
+
+```bash
+ais ctx "Fix the checkout race condition" --codex
+ais ctx "Investigate flaky CI tests" --claude
+```
+
+When you quit, `ais ctx` automatically:
 
 1. Finds the correct session log (even with concurrent sessions)
 2. Generates paginated HTML transcripts
-3. Appends a changelog entry
+3. Optionally appends a changelog entry
 4. Saves everything to your project repo
 
 ### Direct CLI Usage
 
-The CLI runs via `uv` without installation:
-
-```bash
-uv run --project /path/to/ai-code-sessions ai-code-sessions --help
-```
+All commands are available via `ais` (short) or `ai-code-sessions` (full).
 
 Convert a specific file:
 
 ```bash
-uv run --project . ai-code-sessions json /path/to/session.jsonl \
+ai-code-sessions json /path/to/session.jsonl \
   -o ./out \
   --label "My session" \
   --json \
@@ -129,7 +132,7 @@ uv run --project . ai-code-sessions json /path/to/session.jsonl \
 Export by time window:
 
 ```bash
-uv run --project . ai-code-sessions export-latest \
+ai-code-sessions export-latest \
   --tool codex \
   --cwd "$PWD" \
   --project-root "$(git rev-parse --show-toplevel)" \

@@ -1,15 +1,15 @@
 # Source matching (concurrent sessions)
 
-`ctx` exports transcripts by converting the **native JSONL log file** written by Codex/Claude.
+`ais ctx` exports transcripts by converting the **native JSONL log file** written by Codex/Claude.
 
-When you have multiple sessions running at the same time, `ctx` needs a robust way to select “the right” source file for a given `ctx` run. That logic lives in:
+When you have multiple sessions running at the same time, `ais ctx` needs a robust way to select “the right” source file for a given run. That logic lives in:
 
 - `ai-code-sessions find-source`
 - `ai-code-sessions export-latest` (calls `find-source` internally)
 
 ## Inputs used for matching
 
-`ctx` captures and passes:
+`ais ctx` captures and passes:
 
 - `--tool` (`codex` or `claude`)
 - `--cwd` (the directory where you started the session)
@@ -65,11 +65,7 @@ This is the first thing to check when a transcript looks “wrong”.
 
 ## Debugging and overrides
 
-If `ai-code-sessions` isn’t installed on your `PATH`, run commands via:
-
-```bash
-uv run --project "$CTX_TRANSCRIPTS_PROJECT" ai-code-sessions <command> ...
-```
+Install with `pipx install ai-code-sessions` to get `ai-code-sessions` / `ais` on your `PATH`.
 
 ### Debug candidate selection
 

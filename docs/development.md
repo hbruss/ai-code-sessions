@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python `>=3.10`
+- Python `>=3.11`
 - `uv`
 
 ## Repo layout
@@ -45,7 +45,7 @@ High-level checklist:
    - user/assistant messages
    - thinking blocks (optional)
    - tool calls + tool results (important)
-3. Add source-file matching logic (like `find-source`/`export-latest`) if you want `ctx`-style “export on exit” without needing a file path.
+3. Add source-file matching logic (like `find-source`/`export-latest`) if you want `ais ctx`-style “export on exit” without needing a file path.
 4. Add fixtures + snapshot tests.
 
 The goal is to keep templates tool-agnostic: the parser should do the work of translating raw logs into a normalized stream the templates can render.

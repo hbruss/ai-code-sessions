@@ -4,8 +4,9 @@ This project’s CLI converts native session logs into clean, mobile-friendly HT
 
 Command names:
 
-- `ai-code-sessions` (preferred)
-- `ai-code-transcripts` (alias)
+- `ai-code-sessions`
+- `ais` (short alias)
+- `ai-code-transcripts` (legacy alias)
 
 It supports:
 
@@ -15,24 +16,28 @@ It supports:
 
 ## Running it
 
-This repo is set up so `ctx` can run the exporter via `uv run` (no global install required).
+### Install (recommended)
+
+Use `pipx` to install the CLI globally in an isolated environment:
 
 ```bash
-uv run --project /path/to/ai-code-sessions ai-code-sessions --help
+pipx install ai-code-sessions
+pipx ensurepath
 ```
 
-If you use `ctx`, it’s easiest to set this once (see `docs/ctx.md`):
+Then run:
 
 ```bash
-export CTX_TRANSCRIPTS_PROJECT="/path/to/ai-code-sessions"
+ais --help
+ai-code-sessions --help
 ```
 
-### Note on examples
+### Local development
 
-If you don’t have `ai-code-sessions` installed on your `PATH`, prefix commands like this:
+If you’re hacking on this repo, use `uv`:
 
 ```bash
-uv run --project "$CTX_TRANSCRIPTS_PROJECT" ai-code-sessions <command> ...
+uv run --project . ai-code-sessions --help
 ```
 
 ## Commands
@@ -80,7 +85,7 @@ This prints the chosen file path.
 
 ### `export-latest`
 
-This is the command `ctx` uses. It:
+This is the command `ais ctx` uses. It:
 
 1. Selects the best native JSONL source file using `find-source`
 2. Writes `source_match.json` into the output directory
@@ -120,7 +125,7 @@ These commands are inherited from Simon’s tool and are still present:
 
 ### `changelog backfill`
 
-Generate `.changelog/<actor>/entries.jsonl` entries from existing `ctx` output directories:
+Generate `.changelog/<actor>/entries.jsonl` entries from existing session output directories:
 
 ```bash
 ai-code-sessions changelog backfill --project-root "$(git rev-parse --show-toplevel)" --actor "your-github-username"
