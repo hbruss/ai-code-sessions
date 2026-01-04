@@ -22,6 +22,18 @@ The CLI can process logs from:
 
 ---
 
+## Global Options
+
+These flags can be used with any command:
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Show CLI version |
+| `-v, --verbose` | Increase log verbosity (repeatable) |
+| `--log-file PATH` | Write logs to a file (or set `AI_CODE_SESSIONS_LOG_DIR`) |
+
+---
+
 ## Installation
 
 ### Using pipx (Recommended)
@@ -121,7 +133,7 @@ ais ctx "Continue auth fix" --codex resume
 ais ctx "Continue auth fix" --codex resume abc123def
 
 # Resume a Claude session
-ais ctx "Continue testing" --claude --continue
+ais ctx "Continue testing" --claude --resume <session-id>
 
 # Resume a specific Claude session
 ais ctx "Continue testing" --claude --resume abc123def
@@ -146,6 +158,35 @@ Sessions are saved to your project repo:
 | `export_runs.jsonl` | Export metadata for resumable backfills |
 
 See [ctx.md](ctx.md) for detailed documentation.
+
+---
+
+### `ais resume`
+
+Pick a previous session from the current repo and resume it with a friendly picker.
+
+```bash
+# Resume a Codex session (interactive list)
+ais resume codex
+
+# Resume a Claude session (interactive list)
+ais resume claude
+
+# Resume newest session without prompting
+ais resume codex --latest
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--limit N` | Max sessions to show (default: 50) |
+| `--latest` | Resume newest session without prompting |
+| `--open` | Open the transcript after export |
+| `--changelog / --no-changelog` | Append changelog entry (best-effort) |
+| `--changelog-actor TEXT` | Override changelog actor |
+| `--changelog-evaluator TEXT` | `codex` or `claude` |
+| `--changelog-model TEXT` | Model override |
 
 ---
 
@@ -175,6 +216,8 @@ ais json /path/to/session.jsonl -o ./output-dir
 | `--repo OWNER/NAME` | Enable GitHub commit links |
 | `--open` | Open `index.html` after generating |
 | `--gist` | Publish to GitHub Gist |
+| `--output-mode` | `merge`, `overwrite`, or `clean` output directories |
+| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count |
 
 **Examples:**
 
@@ -275,6 +318,9 @@ ais export-latest \
 | `-o, --output DIR` | Output directory (required) |
 | `--label TEXT` | Session label |
 | `--json` | Copy source JSONL to output |
+| `--open` | Open `index.html` after export |
+| `--output-mode` | `merge`, `overwrite`, or `clean` output directories |
+| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count |
 | `--changelog` | Generate changelog entry |
 | `--no-changelog` | Disable changelog |
 | `--changelog-actor TEXT` | Override actor for changelog |
@@ -296,6 +342,45 @@ ais export-latest \
   --changelog \
   --changelog-actor "myusername"
 ```
+
+---
+
+### `ais config show`
+
+Show resolved configuration values and their provenance.
+
+```bash
+ais config show
+ais config show --project-root /path/to/repo
+ais config show --json
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Target git repo (defaults to current repo) |
+| `--json` | Output config + provenance as JSON |
+
+---
+
+### `ais archive`
+
+Generate a repo-level archive that links to existing `.codex/sessions` and `.claude/sessions` outputs.
+
+```bash
+ais archive
+ais archive --project-root /path/to/repo
+ais archive -o ./.ais-archive --open
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Target git repo (defaults to current repo) |
+| `-o, --output DIR` | Output directory (default: `<project_root>/.ais-archive`) |
+| `--open` | Open the archive in your browser |
 
 ---
 

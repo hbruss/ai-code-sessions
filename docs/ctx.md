@@ -80,10 +80,7 @@ ais ctx "Continue checkout fix" --codex resume 01abc234-5678-def0-1234-56789abcd
 ### Claude Resume
 
 ```bash
-# Resume the most recent Claude session
-ais ctx "Continue test coverage" --claude --continue
-
-# Resume a specific session
+# Resume a specific session (recommended)
 ais ctx "Continue test coverage" --claude --resume 01abc234-5678-def0-1234-56789abcdef0
 ```
 
@@ -95,6 +92,19 @@ When you resume:
 2. If a session ID is provided, it also matches against `source_match.json`
 3. The transcript is regenerated to include both old and new content
 4. `export_runs.jsonl` tracks each export window for delta-aware backfills
+
+---
+
+## Interactive Resume Picker
+
+If you don't want to hunt for session IDs, use the picker:
+
+```bash
+ais resume codex
+ais resume claude
+```
+
+The picker is searchable and shows the session label, timestamp (your configured `ctx.tz`), and quick stats.
 
 ---
 

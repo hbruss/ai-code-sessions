@@ -930,18 +930,16 @@ class TestVersionOption:
         assert result.exit_code == 0
         assert expected_version in result.output
 
-    def test_version_short_flag(self):
-        """Test that -v shows version info."""
-        import importlib.metadata
+    def test_verbose_flag(self, tmp_path):
+        """Test that -v enables verbose logging without breaking commands."""
         from click.testing import CliRunner
         from ai_code_transcripts import cli
+        from pathlib import Path
 
+        fixture_path = Path(__file__).parent / "sample_session.json"
         runner = CliRunner()
-        result = runner.invoke(cli, ["-v"])
-
-        expected_version = importlib.metadata.version("ai-code-sessions")
+        result = runner.invoke(cli, ["-v", "json", str(fixture_path), "-o", str(tmp_path)])
         assert result.exit_code == 0
-        assert expected_version in result.output
 
 
 class TestOpenOption:
@@ -1253,7 +1251,7 @@ class TestLocalSessionCLI:
 
         assert result.exit_code == 0
         assert "Loading local sessions" in result.output
-        assert "Generated" in result.output
+        assert "Output:" in result.output
 
     def test_no_args_runs_local_command(self, tmp_path, monkeypatch):
         """Test that running with no arguments runs local command."""

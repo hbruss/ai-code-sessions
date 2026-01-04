@@ -104,9 +104,9 @@ Changelog entries (`.changelog/*/entries.jsonl`) are summaries, not full transcr
 |-------|-----------------|
 | `summary` | May describe what you worked on |
 | `bullets` | May describe specific changes |
-| `files_created/modified/deleted` | Full file paths |
+| `touched_files` | Full file paths (created/modified/deleted/moved) |
 | `commits` | Git commit hashes (linkable) |
-| `transcript_path` | Path to full transcript |
+| `transcript` | Paths to transcript outputs and source JSONL |
 | `tags` | Classification only, low risk |
 
 Changelog entries do **not** contain:

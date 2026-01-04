@@ -16,7 +16,9 @@ This guide covers how to set up a development environment, run tests, and contri
 ```
 ai-code-sessions/
 ├── src/ai_code_sessions/
-│   ├── __init__.py       # Main module: CLI, parsers, exporters (~5000 lines)
+│   ├── __init__.py       # Public package facade
+│   ├── core.py           # Parsers, exporters, changelog, helpers
+│   ├── cli.py            # Click CLI entrypoints
 │   └── templates/        # Jinja2 templates for HTML rendering
 ├── tests/
 │   ├── test_*.py         # pytest test files
@@ -114,13 +116,10 @@ We follow standard Python conventions:
 
 ## Architecture Overview
 
-### Single Module Design
+### Modular Layout
 
-All code lives in `src/ai_code_sessions/__init__.py`. This is intentional:
-
-- Easy to understand the full system
-- No import complexities
-- Simple to test
+The CLI lives in `src/ai_code_sessions/cli.py`, and the implementation lives in
+`src/ai_code_sessions/core.py`. `__init__.py` re-exports the public surface.
 
 ### Key Components
 

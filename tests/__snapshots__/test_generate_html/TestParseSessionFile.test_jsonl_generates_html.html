@@ -194,6 +194,7 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
             <div id="search-status"></div>
             <div id="search-results"></div>
         </dialog>
+        <script id="search-index" type="application/json">{"schema_version": 1, "total_pages": 1, "items": [{"page": 1, "msg_id": "msg-2025-12-24T10-00-00-000Z", "timestamp": "2025-12-24T10:00:00.000Z", "role": "user", "text": "Create a hello world function"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-05-000Z", "timestamp": "2025-12-24T10:00:05.000Z", "role": "assistant", "text": "I'll create that function for you.\n[tool_use:Write]\n{\"file_path\": \"/project/hello.py\", \"content\": \"def hello():\\n    return 'Hello, World!'\\n\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-10-000Z", "timestamp": "2025-12-24T10:00:10.000Z", "role": "tool-reply", "text": "File written successfully"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-15-000Z", "timestamp": "2025-12-24T10:00:15.000Z", "role": "assistant", "text": "[tool_use:Bash]\n{\"command\": \"git add . && git commit -m 'Add hello function'\", \"description\": \"Commit changes\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-20-000Z", "timestamp": "2025-12-24T10:00:20.000Z", "role": "tool-reply", "text": "[main abc1234] Add hello function\n 1 file changed"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-00-000Z", "timestamp": "2025-12-24T10:01:00.000Z", "role": "user", "text": "Now add a goodbye function"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-05-000Z", "timestamp": "2025-12-24T10:01:05.000Z", "role": "assistant", "text": "Done! The hello function is ready."}]}</script>
         <script>
 (function() {
     var totalPages = 1;
@@ -209,8 +210,24 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
 
     if (!searchBox || !modal) return;
 
-    // Hide search on file:// protocol (doesn't work due to CORS restrictions)
-    if (window.location.protocol === 'file:') return;
+    var searchIndex = null;
+
+    function loadEmbeddedIndex() {
+        var el = document.getElementById('search-index');
+        if (!el) return null;
+        try {
+            var parsed = JSON.parse(el.textContent || '');
+            return parsed && parsed.items ? parsed : null;
+        } catch (e) {
+            console.error('Failed to parse embedded search index:', e);
+            return null;
+        }
+    }
+
+    if (window.location.protocol === 'file:') {
+        searchIndex = loadEmbeddedIndex();
+        if (!searchIndex) return;
+    }
 
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
@@ -221,6 +238,10 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
     var gistId = null;
     var gistOwner = null;
     var gistInfoLoaded = false;
+
+    if (searchIndex && searchIndex.total_pages) {
+        totalPages = searchIndex.total_pages;
+    }
 
     if (isGistPreview) {
         // Extract gist ID from URL query string like ?78a436a8a9e7a2e603738b8193b95410/index.html
@@ -372,6 +393,39 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
         return resultsFromPage;
     }
 
+    function highlightSnippet(snippet, query) {
+        var escaped = escapeHtml(snippet);
+        var regex = new RegExp('(' + escapeRegex(query) + ')', 'gi');
+        return escaped.replace(regex, '<mark>$1</mark>');
+    }
+
+    function searchInIndex(query) {
+        var items = (searchIndex && searchIndex.items) ? searchIndex.items : [];
+        var resultsFound = 0;
+        searchResults.innerHTML = '';
+        items.forEach(function(item) {
+            var text = (item.text || '');
+            if (!text) return;
+            if (text.toLowerCase().indexOf(query.toLowerCase()) === -1) return;
+            resultsFound++;
+            var pageFile = 'page-' + String(item.page).padStart(3, '0') + '.html';
+            var link = pageFile + (item.msg_id ? '#' + item.msg_id : '');
+            var snippet = text;
+            if (snippet.length > 400) {
+                snippet = snippet.slice(0, 397) + '...';
+            }
+            var meta = (item.role ? item.role.replace('-', ' ') : 'message');
+            var resultDiv = document.createElement('div');
+            resultDiv.className = 'search-result';
+            resultDiv.innerHTML = '<a href="' + link + '">' +
+                '<div class="search-result-page">' + escapeHtml(pageFile) + ' · ' + escapeHtml(meta) + '</div>' +
+                '<div class="search-result-content">' + highlightSnippet(snippet, query) + '</div>' +
+                '</a>';
+            searchResults.appendChild(resultDiv);
+        });
+        searchStatus.textContent = 'Found ' + resultsFound + ' result(s) in ' + totalPages + ' pages';
+    }
+
     async function performSearch(query) {
         if (!query.trim()) {
             searchStatus.textContent = 'Enter a search term';
@@ -381,6 +435,11 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
         updateUrlHash(query);
         searchResults.innerHTML = '';
         searchStatus.textContent = 'Searching...';
+
+        if (searchIndex) {
+            searchInIndex(query);
+            return;
+        }
 
         // Load gist info if on gistpreview (needed for constructing URLs)
         if (isGistPreview && !gistInfoLoaded) {

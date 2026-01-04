@@ -155,11 +155,12 @@ ais ctx "Continue database refactor" --codex resume
 # Resume a specific Codex session by ID
 ais ctx "Continue database refactor" --codex resume abc123
 
-# Resume a Claude session
-ais ctx "Continue memory debugging" --claude --continue
-
 # Resume a specific Claude session
 ais ctx "Continue memory debugging" --claude --resume abc123
+
+# Or pick from a list
+ais resume codex
+ais resume claude
 ```
 
 ### What Gets Generated
@@ -195,10 +196,8 @@ Each entry includes:
 | `summary` | One-line description of the session's purpose |
 | `bullets` | 3-5 specific changes or accomplishments |
 | `tags` | Classification (`feat`, `fix`, `refactor`, `docs`, etc.) |
-| `files_created` | New files added |
-| `files_modified` | Existing files changed |
-| `files_deleted` | Files removed |
-| `test_passed` | Whether the test suite passed |
+| `touched_files` | Created/modified/deleted/moved files (best-effort) |
+| `tests` | Test commands + results (`pass`/`fail`/`unknown`) |
 | `commits` | Git commits made during the session |
 
 ### Where Changelogs Live
@@ -304,7 +303,8 @@ Start a labeled AI coding session with automatic transcript export.
 ais ctx "My session label" --codex
 ais ctx "My session label" --claude
 ais ctx "My session label" --codex resume
-ais ctx "My session label" --claude --continue
+ais ctx "My session label" --claude --resume <session-id>
+ais resume codex
 ```
 
 ### `ais json`

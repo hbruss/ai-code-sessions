@@ -52,6 +52,17 @@ ais setup --project-root /path/to/my/repo
 
 ---
 
+## Inspect Resolved Config
+
+See the final values and where they came from:
+
+```bash
+ais config show
+ais config show --json
+```
+
+---
+
 ## Config File Locations
 
 ### Global Config
@@ -90,6 +101,8 @@ Settings for the `ais ctx` command:
 ```toml
 [ctx]
 tz = "America/Los_Angeles"    # Timezone for session folder names (IANA format)
+codex_cmd = "codex"           # Optional override for Codex CLI executable
+claude_cmd = "claude"         # Optional override for Claude CLI executable
 ```
 
 ### `[changelog]` Section
@@ -112,6 +125,8 @@ claude_thinking_tokens = 8192  # Max thinking tokens (Claude only)
 
 [ctx]
 tz = "America/New_York"
+codex_cmd = "codex"
+claude_cmd = "claude"
 
 [changelog]
 enabled = true
