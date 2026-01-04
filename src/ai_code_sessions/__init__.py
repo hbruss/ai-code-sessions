@@ -2272,6 +2272,9 @@ def _generate_and_append_changelog_entry(
         if not isinstance(tags, list):
             tags = []
 
+        created_at_dt = _parse_iso8601(start) or _parse_iso8601(end)
+        created_at = created_at_dt.isoformat() if created_at_dt else _now_iso8601()
+
         index_html_path = session_dir_abs / "index.html"
         if not index_html_path.exists():
             trace_path = session_dir_abs / "trace.html"
@@ -2281,7 +2284,7 @@ def _generate_and_append_changelog_entry(
         entry = {
             "schema_version": CHANGELOG_ENTRY_SCHEMA_VERSION,
             "run_id": run_id,
-            "created_at": _now_iso8601(),
+            "created_at": created_at,
             "tool": tool or "unknown",
             "actor": actor_value,
             "project": project,
