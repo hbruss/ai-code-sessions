@@ -3,6 +3,7 @@
 import json
 import html
 import hashlib
+import itertools
 import os
 import platform
 import re
@@ -10,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import tomllib
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -1857,6 +1860,52 @@ def _budget_changelog_digest(
     return last
 
 
+def _format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    mins, secs = divmod(total, 60)
+    hours, mins = divmod(mins, 60)
+    if hours:
+        return f"{hours}:{mins:02d}:{secs:02d}"
+    return f"{mins}:{secs:02d}"
+
+
+def _run_with_activity_indicator(*, label: str, fn, interval_seconds: float = 1.0):
+    if os.environ.get("CTX_CHANGELOG_PROGRESS") == "0":
+        return fn()
+    if not sys.stderr.isatty():
+        return fn()
+
+    stop = threading.Event()
+    start = time.monotonic()
+
+    def _line(prefix: str) -> str:
+        elapsed = _format_elapsed(time.monotonic() - start)
+        return f"{label} {prefix} {elapsed}"
+
+    def _worker() -> None:
+        for ch in itertools.cycle("|/-\\"):
+            if stop.wait(interval_seconds):
+                break
+            try:
+                sys.stderr.write("\r" + _line(ch))
+                sys.stderr.flush()
+            except Exception:
+                break
+
+    sys.stderr.write(_line("|"))
+    sys.stderr.flush()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
+        t.join(timeout=2)
+        sys.stderr.write("\r" + _line("done") + "\n")
+        sys.stderr.flush()
+
+
 def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
     codex_bin = shutil.which("codex")
     if not codex_bin:
@@ -2225,23 +2274,31 @@ def _generate_and_append_changelog_entry(
             if evaluator_value == "codex":
                 schema_path = _write_json_schema_tempfile(_CHANGELOG_CODEX_OUTPUT_SCHEMA)
 
+            activity_label = f"Changelog eval ({evaluator_value}) {session_dir.name}"
+
             def _run_eval(d: dict) -> dict:
                 prompt = _build_codex_changelog_prompt(digest=d)
                 if evaluator_value == "codex":
                     if schema_path is None:
                         raise click.ClickException("Internal error: missing Codex schema path")
-                    return _run_codex_changelog_evaluator(
+                    return _run_with_activity_indicator(
+                        label=activity_label,
+                        fn=lambda: _run_codex_changelog_evaluator(
+                            prompt=prompt,
+                            schema_path=schema_path,
+                            cd=project_root,
+                            model=evaluator_model,
+                        ),
+                    )
+                return _run_with_activity_indicator(
+                    label=activity_label,
+                    fn=lambda: _run_claude_changelog_evaluator(
                         prompt=prompt,
-                        schema_path=schema_path,
+                        json_schema=_CHANGELOG_CODEX_OUTPUT_SCHEMA,
                         cd=project_root,
                         model=evaluator_model,
-                    )
-                return _run_claude_changelog_evaluator(
-                    prompt=prompt,
-                    json_schema=_CHANGELOG_CODEX_OUTPUT_SCHEMA,
-                    cd=project_root,
-                    model=evaluator_model,
-                    max_thinking_tokens=claude_max_thinking_tokens,
+                        max_thinking_tokens=claude_max_thinking_tokens,
+                    ),
                 )
 
             try:
@@ -2250,6 +2307,7 @@ def _generate_and_append_changelog_entry(
                 # Some sessions are too large to fit in a single evaluator prompt.
                 # Retry once with a budgeted digest before recording a failure.
                 if _looks_like_context_window_error(str(e)):
+                    click.echo("Changelog eval too large; retrying with budget digest...", err=True)
                     evaluator_out = _run_eval(_budget_changelog_digest(digest))
                 else:
                     raise
