@@ -25,17 +25,25 @@ Each changelog entry includes:
 
 | Field | Description | Example |
 |-------|-------------|---------|
-| `id` | Content-based hash (prevents duplicates) | `"abc123..."` |
-| `created_at` | When the session started | `"2026-01-02T14:35:00Z"` |
+| `schema_version` | Entry schema version | `1` |
+| `run_id` | Content-based hash (prevents duplicates) | `"c2157e415f33ca4a"` |
+| `created_at` | When the entry was created | `"2026-01-04T10:17:01.096900+00:00"` |
+| `tool` | Session source | `"codex"` |
+| `actor` | Changelog actor | `"russronchi"` |
+| `project` | Repo name | `"ai-code-sessions"` |
+| `project_root` | Repo root path | `"/Users/.../ai-code-sessions"` |
+| `label` | Session label | `"Code Review 1"` |
+| `start` / `end` | Session window | `"2026-01-04T10:07:18.024479+00:00"` |
+| `session_dir` | Output directory | `".../.codex/sessions/2026-01-04-0207_Code_Review_1"` |
+| `continuation_of_run_id` | Prior run when resuming | `"b1a2..."` or `null` |
+| `transcript` | Transcript paths | `{ "index_html": "...", "source_jsonl": "...", ... }` |
 | `summary` | One-line description | `"Fixed authentication race condition"` |
-| `bullets` | 3-5 specific accomplishments | `["Added mutex to token refresh", "Added retry logic", ...]` |
+| `bullets` | 3-12 specific accomplishments | `["Added mutex to token refresh", "Added retry logic", ...]` |
 | `tags` | Classification | `["fix", "auth"]` |
-| `files_created` | New files | `["src/auth/mutex.ts"]` |
-| `files_modified` | Changed files | `["src/auth/token.ts"]` |
-| `files_deleted` | Removed files | `["src/auth/legacy.ts"]` |
-| `test_passed` | Test outcome | `true` / `false` / `null` |
-| `commits` | Git commits made | `["abc1234", "def5678"]` |
-| `transcript_path` | Link to full transcript | `".codex/sessions/2026-01-02.../index.html"` |
+| `touched_files` | Created/modified/deleted/moved | `{ "created": [...], "moved": [{"from":"...","to":"..."}] }` |
+| `tests` | Test commands + results | `[{"cmd":"uv run pytest","result":"pass"}]` |
+| `commits` | Git commits made | `[{"hash":"abc1234","message":"Fix auth race"}]` |
+| `notes` | Optional extra notes | `null` |
 
 ---
 
@@ -260,8 +268,9 @@ tail -1 .changelog/*/failures.jsonl | jq '.stderr_tail'
 
 Changelog entries contain:
 - Summaries of your prompts and AI responses
-- File paths that were created/modified/deleted
-- Git commit hashes
+- File paths that were created/modified/deleted/moved
+- Git commit hashes and short messages
+- Test commands and pass/fail results
 
 They do **not** contain:
 - Full file contents
@@ -286,8 +295,24 @@ For private repos or team visibility, you may want to commit changelogs.
 
 ```json
 {
-  "id": "abc123def456...",
-  "created_at": "2026-01-02T14:35:00Z",
+  "schema_version": 1,
+  "run_id": "c2157e415f33ca4a",
+  "created_at": "2026-01-04T10:17:01.096900+00:00",
+  "tool": "codex",
+  "actor": "russronchi",
+  "project": "ai-code-sessions",
+  "project_root": "/Users/russronchi/Projects/ai-code-sessions",
+  "label": "Fix Checkout Race",
+  "start": "2026-01-04T10:07:18.024479+00:00",
+  "end": "2026-01-04T10:16:34.084243+00:00",
+  "session_dir": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
+  "continuation_of_run_id": null,
+  "transcript": {
+    "output_dir": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
+    "index_html": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/index.html",
+    "source_jsonl": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/rollout-2026-01-04T02-07-18-019b8879-bc8e-7282-b235-118cc5d9949b.jsonl",
+    "source_match_json": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/source_match.json"
+  },
   "summary": "Fixed race condition in checkout flow causing duplicate orders",
   "bullets": [
     "Added mutex lock around order creation",
@@ -296,40 +321,15 @@ For private repos or team visibility, you may want to commit changelogs.
     "Fixed flaky test in CartServiceTest"
   ],
   "tags": ["fix", "checkout", "concurrency"],
-  "files_created": ["src/checkout/mutex.ts", "tests/checkout/concurrent.test.ts"],
-  "files_modified": ["src/checkout/order.ts", "src/checkout/cart.ts"],
-  "files_deleted": [],
-  "test_passed": true,
-  "commits": ["abc1234", "def5678"],
-  "transcript_path": ".codex/sessions/2026-01-02-1435_Fix_Checkout_Race/index.html"
-}
-```
-
-### A Feature Session
-
-```json
-{
-  "id": "789ghi012jkl...",
-  "created_at": "2026-01-03T09:00:00Z",
-  "summary": "Added OAuth 2.0 support for Google and GitHub providers",
-  "bullets": [
-    "Implemented OAuth flow abstraction",
-    "Added Google OAuth provider",
-    "Added GitHub OAuth provider",
-    "Created provider configuration UI",
-    "Added E2E tests for OAuth flows"
-  ],
-  "tags": ["feat", "auth", "oauth"],
-  "files_created": [
-    "src/auth/oauth/base.ts",
-    "src/auth/oauth/google.ts",
-    "src/auth/oauth/github.ts"
-  ],
-  "files_modified": ["src/auth/index.ts", "src/config/providers.ts"],
-  "files_deleted": ["src/auth/legacy-google.ts"],
-  "test_passed": true,
-  "commits": ["111aaa", "222bbb", "333ccc"],
-  "transcript_path": ".codex/sessions/2026-01-03-0900_Add_OAuth/index.html"
+  "touched_files": {
+    "created": ["src/checkout/mutex.ts", "tests/checkout/concurrent.test.ts"],
+    "modified": ["src/checkout/order.ts", "src/checkout/cart.ts"],
+    "deleted": [],
+    "moved": []
+  },
+  "tests": [{"cmd": "uv run pytest", "result": "pass"}],
+  "commits": [{"hash": "abc1234", "message": "Fix checkout race condition"}],
+  "notes": null
 }
 ```
 

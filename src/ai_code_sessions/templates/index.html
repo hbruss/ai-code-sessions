@@ -33,6 +33,7 @@
             <div id="search-status"></div>
             <div id="search-results"></div>
         </dialog>
+        <script id="search-index" type="application/json">{{ search_index_json|safe }}</script>
         <script>
 {% include "search.js" %}
         </script>

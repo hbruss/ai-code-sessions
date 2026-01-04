@@ -116,10 +116,18 @@ Optionally generate structured summaries:
     "Added GitHub OAuth provider"
   ],
   "tags": ["feat", "auth"],
-  "files_created": ["src/auth/oauth/google.ts", "src/auth/oauth/github.ts"],
-  "files_modified": ["src/auth/index.ts"],
-  "test_passed": true,
-  "commits": ["abc1234", "def5678"]
+  "touched_files": {
+    "created": ["src/auth/oauth/google.ts", "src/auth/oauth/github.ts"],
+    "modified": ["src/auth/index.ts"],
+    "deleted": [],
+    "moved": []
+  },
+  "tests": [
+    {"cmd": "uv run --group dev pytest", "result": "pass"}
+  ],
+  "commits": [
+    {"hash": "abc1234", "message": "Add OAuth providers"}
+  ]
 }
 ```
 
@@ -133,6 +141,9 @@ ais ctx "Big refactor" --codex
 
 # Day 2
 ais ctx "Continue refactor" --codex resume
+
+# Or pick from a list
+ais resume codex
 ```
 
 ---

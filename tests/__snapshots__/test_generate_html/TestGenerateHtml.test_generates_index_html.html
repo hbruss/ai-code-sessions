@@ -203,6 +203,7 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
             <div id="search-status"></div>
             <div id="search-results"></div>
         </dialog>
+        <script id="search-index" type="application/json">{"schema_version": 1, "total_pages": 2, "items": [{"page": 1, "msg_id": "msg-2025-12-24T10-00-00-000Z", "timestamp": "2025-12-24T10:00:00.000Z", "role": "user", "text": "Create a simple Python function to add two numbers"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-05-000Z", "timestamp": "2025-12-24T10:00:05.000Z", "role": "assistant", "text": "The user wants a simple addition function. I should:\n1. Create the function\n2. Add a basic test\n\nThis is straightforward.\nI'll create a simple Python function for you. Let me write it now.\n[tool_use:Write]\n{\"file_path\": \"/project/math_utils.py\", \"content\": \"def add(a: int, b: int) -> int:\\n    \\\"\\\"\\\"Add two numbers together.\\\"\\\"\\\"\\n    return a + b\\n\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-10-000Z", "timestamp": "2025-12-24T10:00:10.000Z", "role": "tool-reply", "text": "File written successfully"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-15-000Z", "timestamp": "2025-12-24T10:00:15.000Z", "role": "assistant", "text": "I've created the `add` function. Now let me run the tests.\n[tool_use:Bash]\n{\"command\": \"python -m pytest tests/\", \"description\": \"Run pytest on tests directory\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-20-000Z", "timestamp": "2025-12-24T10:00:20.000Z", "role": "tool-reply", "text": "===== test session starts =====\ncollected 2 items\n\ntests/test_math.py ..  [100%]\n\n===== 2 passed in 0.05s ====="}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-25-000Z", "timestamp": "2025-12-24T10:00:25.000Z", "role": "assistant", "text": "All tests pass. Let me update the todo list and make a commit.\n[tool_use:TodoWrite]\n{\"todos\": [{\"content\": \"Create add function\", \"status\": \"completed\", \"activeForm\": \"Creating add function\"}, {\"content\": \"Write tests\", \"status\": \"completed\", \"activeForm\": \"Writing tests\"}, {\"content\": \"Run tests\", \"status\": \"completed\", \"activeForm\": \"Running tests\"}, {\"content\": \"Commit changes\", \"status\": \"in_progress\", \"activeForm\": \"Committing changes\"}, {\"content\": \"Push to remote\", \"status\": \"pending\", \"activeForm\": \"Pushing to remote\"}]}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-30-000Z", "timestamp": "2025-12-24T10:00:30.000Z", "role": "tool-reply", "text": "Todos updated"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-35-000Z", "timestamp": "2025-12-24T10:00:35.000Z", "role": "assistant", "text": "[tool_use:Bash]\n{\"command\": \"git add . && git commit -m 'Add math_utils with add function'\", \"description\": \"Commit changes\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-40-000Z", "timestamp": "2025-12-24T10:00:40.000Z", "role": "tool-reply", "text": "[main abc1234] Add math_utils with add function\n 1 file changed, 5 insertions(+)"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-45-000Z", "timestamp": "2025-12-24T10:00:45.000Z", "role": "assistant", "text": "Committed! Now pushing to remote.\n[tool_use:Bash]\n{\"command\": \"git push -u origin main\", \"description\": \"Push to remote\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-00-50-000Z", "timestamp": "2025-12-24T10:00:50.000Z", "role": "tool-reply", "text": "remote: \nremote: Create a pull request for 'main' on GitHub by visiting:\nremote:      https://github.com/example/project/pull/new/main\nremote: \nTo github.com:example/project.git\n   def5678..abc1234  main -> main"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-00-000Z", "timestamp": "2025-12-24T10:01:00.000Z", "role": "user", "text": "Now edit the file to add a subtract function"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-05-000Z", "timestamp": "2025-12-24T10:01:05.000Z", "role": "assistant", "text": "[tool_use:Glob]\n{\"pattern\": \"**/*.py\", \"path\": \"/project\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-10-000Z", "timestamp": "2025-12-24T10:01:10.000Z", "role": "tool-reply", "text": "/project/math_utils.py\n/project/tests/test_math.py"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-15-000Z", "timestamp": "2025-12-24T10:01:15.000Z", "role": "assistant", "text": "[tool_use:Edit]\n{\"file_path\": \"/project/math_utils.py\", \"old_string\": \"    return a + b\\n\", \"new_string\": \"    return a + b\\n\\n\\ndef subtract(a: int, b: int) -> int:\\n    \\\"\\\"\\\"Subtract b from a.\\\"\\\"\\\"\\n    return a - b\\n\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-20-000Z", "timestamp": "2025-12-24T10:01:20.000Z", "role": "tool-reply", "text": "File edited successfully"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-25-000Z", "timestamp": "2025-12-24T10:01:25.000Z", "role": "assistant", "text": "Added the subtract function. Let me verify with grep.\n[tool_use:Grep]\n{\"pattern\": \"def subtract\", \"path\": \"/project\", \"output_mode\": \"content\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-01-30-000Z", "timestamp": "2025-12-24T10:01:30.000Z", "role": "tool-reply", "text": "/project/math_utils.py:6:def subtract(a: int, b: int) -> int:"}, {"page": 1, "msg_id": "msg-2025-12-24T10-02-00-000Z", "timestamp": "2025-12-24T10:02:00.000Z", "role": "user", "text": "Run the tests again"}, {"page": 1, "msg_id": "msg-2025-12-24T10-02-05-000Z", "timestamp": "2025-12-24T10:02:05.000Z", "role": "assistant", "text": "[tool_use:Bash]\n{\"command\": \"python -m pytest tests/ -v\", \"description\": \"Run tests with verbose output\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-02-10-000Z", "timestamp": "2025-12-24T10:02:10.000Z", "role": "tool-reply", "text": "Exit code 1\n===== FAILURES =====\ntest_subtract - AssertionError: expected 5 but got None"}, {"page": 1, "msg_id": "msg-2025-12-24T10-02-15-000Z", "timestamp": "2025-12-24T10:02:15.000Z", "role": "assistant", "text": "There's a test failure. I need to check the test file and fix it.\n\nHere's some **markdown** content with:\n- A bullet list\n- `inline code`\n- A [link](https://example.com)\n\n```python\ndef example():\n    return 42\n```"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-00-000Z", "timestamp": "2025-12-24T10:03:00.000Z", "role": "user", "text": "Fix the issue and commit"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-05-000Z", "timestamp": "2025-12-24T10:03:05.000Z", "role": "assistant", "text": "[tool_use:Edit]\n{\"file_path\": \"/project/tests/test_math.py\", \"old_string\": \"assert subtract(10, 5) == None\", \"new_string\": \"assert subtract(10, 5) == 5\", \"replace_all\": true}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-10-000Z", "timestamp": "2025-12-24T10:03:10.000Z", "role": "tool-reply", "text": "File edited successfully"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-15-000Z", "timestamp": "2025-12-24T10:03:15.000Z", "role": "assistant", "text": "[tool_use:Bash]\n{\"command\": \"git add . && git commit -m 'Add subtract function and fix tests'\", \"description\": \"Commit the fix\"}"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-20-000Z", "timestamp": "2025-12-24T10:03:20.000Z", "role": "tool-reply", "text": "[main def5678] Add subtract function and fix tests\n 2 files changed, 10 insertions(+), 1 deletion(-)"}, {"page": 1, "msg_id": "msg-2025-12-24T10-03-25-000Z", "timestamp": "2025-12-24T10:03:25.000Z", "role": "assistant", "text": "Done! The subtract function is now working and committed."}, {"page": 1, "msg_id": "msg-2025-12-24T10-04-00-000Z", "timestamp": "2025-12-24T10:04:00.000Z", "role": "user", "text": "This is a session continuation summary from a previous context. The user was working on a math utilities library."}, {"page": 2, "msg_id": "msg-2025-12-24T10-05-00-000Z", "timestamp": "2025-12-24T10:05:00.000Z", "role": "user", "text": "Add a multiply function too"}, {"page": 2, "msg_id": "msg-2025-12-24T10-05-05-000Z", "timestamp": "2025-12-24T10:05:05.000Z", "role": "assistant", "text": "[tool_use:Edit]\n{\"file_path\": \"/project/math_utils.py\", \"old_string\": \"    return a - b\\n\", \"new_string\": \"    return a - b\\n\\n\\ndef multiply(a: int, b: int) -> int:\\n    \\\"\\\"\\\"Multiply two numbers.\\\"\\\"\\\"\\n    return a * b\\n\"}"}, {"page": 2, "msg_id": "msg-2025-12-24T10-05-10-000Z", "timestamp": "2025-12-24T10:05:10.000Z", "role": "tool-reply", "text": "File edited successfully"}, {"page": 2, "msg_id": "msg-2025-12-24T10-05-15-000Z", "timestamp": "2025-12-24T10:05:15.000Z", "role": "assistant", "text": "Added multiply function!"}]}</script>
         <script>
 (function() {
     var totalPages = 2;
@@ -218,8 +219,24 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
 
     if (!searchBox || !modal) return;
 
-    // Hide search on file:// protocol (doesn't work due to CORS restrictions)
-    if (window.location.protocol === 'file:') return;
+    var searchIndex = null;
+
+    function loadEmbeddedIndex() {
+        var el = document.getElementById('search-index');
+        if (!el) return null;
+        try {
+            var parsed = JSON.parse(el.textContent || '');
+            return parsed && parsed.items ? parsed : null;
+        } catch (e) {
+            console.error('Failed to parse embedded search index:', e);
+            return null;
+        }
+    }
+
+    if (window.location.protocol === 'file:') {
+        searchIndex = loadEmbeddedIndex();
+        if (!searchIndex) return;
+    }
 
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
@@ -230,6 +247,10 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
     var gistId = null;
     var gistOwner = null;
     var gistInfoLoaded = false;
+
+    if (searchIndex && searchIndex.total_pages) {
+        totalPages = searchIndex.total_pages;
+    }
 
     if (isGistPreview) {
         // Extract gist ID from URL query string like ?78a436a8a9e7a2e603738b8193b95410/index.html
@@ -381,6 +402,39 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
         return resultsFromPage;
     }
 
+    function highlightSnippet(snippet, query) {
+        var escaped = escapeHtml(snippet);
+        var regex = new RegExp('(' + escapeRegex(query) + ')', 'gi');
+        return escaped.replace(regex, '<mark>$1</mark>');
+    }
+
+    function searchInIndex(query) {
+        var items = (searchIndex && searchIndex.items) ? searchIndex.items : [];
+        var resultsFound = 0;
+        searchResults.innerHTML = '';
+        items.forEach(function(item) {
+            var text = (item.text || '');
+            if (!text) return;
+            if (text.toLowerCase().indexOf(query.toLowerCase()) === -1) return;
+            resultsFound++;
+            var pageFile = 'page-' + String(item.page).padStart(3, '0') + '.html';
+            var link = pageFile + (item.msg_id ? '#' + item.msg_id : '');
+            var snippet = text;
+            if (snippet.length > 400) {
+                snippet = snippet.slice(0, 397) + '...';
+            }
+            var meta = (item.role ? item.role.replace('-', ' ') : 'message');
+            var resultDiv = document.createElement('div');
+            resultDiv.className = 'search-result';
+            resultDiv.innerHTML = '<a href="' + link + '">' +
+                '<div class="search-result-page">' + escapeHtml(pageFile) + ' · ' + escapeHtml(meta) + '</div>' +
+                '<div class="search-result-content">' + highlightSnippet(snippet, query) + '</div>' +
+                '</a>';
+            searchResults.appendChild(resultDiv);
+        });
+        searchStatus.textContent = 'Found ' + resultsFound + ' result(s) in ' + totalPages + ' pages';
+    }
+
     async function performSearch(query) {
         if (!query.trim()) {
             searchStatus.textContent = 'Enter a search term';
@@ -390,6 +444,11 @@ details.continuation[open] summary { border-radius: 12px 12px 0 0; margin-bottom
         updateUrlHash(query);
         searchResults.innerHTML = '';
         searchStatus.textContent = 'Searching...';
+
+        if (searchIndex) {
+            searchInIndex(query);
+            return;
+        }
 
         // Load gist info if on gistpreview (needed for constructing URLs)
         if (isGistPreview && !gistInfoLoaded) {

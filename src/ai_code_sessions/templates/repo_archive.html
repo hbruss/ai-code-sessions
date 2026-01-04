@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{{ transcript_title }}{% endblock %}
+
+{% block content %}
+        <h1>{{ transcript_title }}</h1>
+        <p style="color: var(--text-muted); margin-bottom: 24px;">{{ session_count }} session{% if session_count != 1 %}s{% endif %}</p>
+
+        {% if sessions %}
+        {% for session in sessions %}
+        <div class="index-item">
+            <a href="{{ session.link }}">
+                <div class="index-item-header">
+                    <span class="index-item-number">{{ session.date }}</span>
+                    <span style="color: var(--text-muted);">{{ session.tool }} · {{ session.duration }} · {{ session.pages }} pages</span>
+                </div>
+                <div class="index-item-content">
+                    <p style="margin: 0;">{{ session.label }}</p>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p style="color: var(--text-muted);">No sessions found.</p>
+        {% endif %}
+{%- endblock %}

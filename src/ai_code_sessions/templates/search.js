@@ -12,8 +12,24 @@
 
     if (!searchBox || !modal) return;
 
-    // Hide search on file:// protocol (doesn't work due to CORS restrictions)
-    if (window.location.protocol === 'file:') return;
+    var searchIndex = null;
+
+    function loadEmbeddedIndex() {
+        var el = document.getElementById('search-index');
+        if (!el) return null;
+        try {
+            var parsed = JSON.parse(el.textContent || '');
+            return parsed && parsed.items ? parsed : null;
+        } catch (e) {
+            console.error('Failed to parse embedded search index:', e);
+            return null;
+        }
+    }
+
+    if (window.location.protocol === 'file:') {
+        searchIndex = loadEmbeddedIndex();
+        if (!searchIndex) return;
+    }
 
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
@@ -24,6 +40,10 @@
     var gistId = null;
     var gistOwner = null;
     var gistInfoLoaded = false;
+
+    if (searchIndex && searchIndex.total_pages) {
+        totalPages = searchIndex.total_pages;
+    }
 
     if (isGistPreview) {
         // Extract gist ID from URL query string like ?78a436a8a9e7a2e603738b8193b95410/index.html
@@ -175,6 +195,39 @@
         return resultsFromPage;
     }
 
+    function highlightSnippet(snippet, query) {
+        var escaped = escapeHtml(snippet);
+        var regex = new RegExp('(' + escapeRegex(query) + ')', 'gi');
+        return escaped.replace(regex, '<mark>$1</mark>');
+    }
+
+    function searchInIndex(query) {
+        var items = (searchIndex && searchIndex.items) ? searchIndex.items : [];
+        var resultsFound = 0;
+        searchResults.innerHTML = '';
+        items.forEach(function(item) {
+            var text = (item.text || '');
+            if (!text) return;
+            if (text.toLowerCase().indexOf(query.toLowerCase()) === -1) return;
+            resultsFound++;
+            var pageFile = 'page-' + String(item.page).padStart(3, '0') + '.html';
+            var link = pageFile + (item.msg_id ? '#' + item.msg_id : '');
+            var snippet = text;
+            if (snippet.length > 400) {
+                snippet = snippet.slice(0, 397) + '...';
+            }
+            var meta = (item.role ? item.role.replace('-', ' ') : 'message');
+            var resultDiv = document.createElement('div');
+            resultDiv.className = 'search-result';
+            resultDiv.innerHTML = '<a href="' + link + '">' +
+                '<div class="search-result-page">' + escapeHtml(pageFile) + ' · ' + escapeHtml(meta) + '</div>' +
+                '<div class="search-result-content">' + highlightSnippet(snippet, query) + '</div>' +
+                '</a>';
+            searchResults.appendChild(resultDiv);
+        });
+        searchStatus.textContent = 'Found ' + resultsFound + ' result(s) in ' + totalPages + ' pages';
+    }
+
     async function performSearch(query) {
         if (!query.trim()) {
             searchStatus.textContent = 'Enter a search term';
@@ -184,6 +237,11 @@
         updateUrlHash(query);
         searchResults.innerHTML = '';
         searchStatus.textContent = 'Searching...';
+
+        if (searchIndex) {
+            searchInIndex(query);
+            return;
+        }
 
         // Load gist info if on gistpreview (needed for constructing URLs)
         if (isGistPreview && !gistInfoLoaded) {
