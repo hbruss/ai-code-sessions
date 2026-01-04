@@ -1,70 +1,362 @@
-# `ais ctx` (Codex + Claude)
+# The `ais ctx` Workflow
 
-`ais ctx` runs Codex CLI or Claude Code CLI **normally** (no PTY screen-scraping), then exports the matching native JSONL session log into a per-repo directory with paginated HTML.
+`ais ctx` is the recommended way to use `ai-code-sessions`. It runs Codex or Claude **normally** (preserving all terminal colors and interactivity), then automatically exports a browsable HTML transcript when you exit.
 
-## Install
+## Why Use `ais ctx`?
+
+Without `ais ctx`, you would need to:
+
+1. Run your AI tool (Codex or Claude)
+2. Note the start time
+3. Work on your task
+4. Note the end time
+5. Manually run `ais export-latest` with the correct timestamps
+6. Hope you got the right log file
+
+With `ais ctx`, all of this happens automatically:
+
+```bash
+# Just add a label and the tool flag
+ais ctx "Fix the checkout bug" --codex
+# ... work normally ...
+# Press Ctrl+D or type /exit
+# Transcript appears in .codex/sessions/
+```
+
+---
+
+## Installation
 
 ```bash
 pipx install ai-code-sessions
 pipx ensurepath
 ```
 
-## Usage
+---
 
-Start a labeled session:
+## Basic Usage
 
-```bash
-ais ctx "Fix checkout race condition" --codex
-ais ctx "Investigate flaky CI tests" --claude
-```
-
-Pass-through arguments are forwarded to the underlying CLI (resume/continue included):
+### Starting a New Session
 
 ```bash
-ais ctx "My label" --codex resume
-ais ctx "My label" --codex resume <session-id>
+# Start a Codex session
+ais ctx "Fix the checkout race condition" --codex
 
-ais ctx "My label" --claude --continue
-ais ctx "My label" --claude --resume <session-id>
+# Start a Claude session
+ais ctx "Add comprehensive test coverage" --claude
 ```
 
-Notes:
+The quoted string becomes:
+- The **session label** (shown in the transcript header)
+- Part of the **directory name** (sanitized for filesystem safety)
 
-- On resume/continue, `ais ctx` tries to reuse the previous session directory (by label, and session ID when provided) so the transcript is updated in-place.
-- If Claude is invoked with `--fork-session`, it’s treated as a new session (new output directory).
+### What Happens
 
-## Output directories
+1. `ais ctx` captures the current timestamp
+2. Launches Codex or Claude with any extra arguments you provide
+3. You work normally (full colors, interactivity, everything works)
+4. When you exit (Ctrl+D or `/exit`), it captures the end timestamp
+5. Finds the matching native log file
+6. Generates `index.html` + `page-*.html` transcripts
+7. Copies the source JSONL for archival
+8. Optionally generates a changelog entry
 
-- Codex:  `<repo-root>/.codex/sessions/<STAMP>_<SANITIZED_LABEL>[_N]/`
-- Claude: `<repo-root>/.claude/sessions/<STAMP>_<SANITIZED_LABEL>[_N]/`
+---
 
-`STAMP` defaults to Pacific time (`America/Los_Angeles`) unless overridden by config or `CTX_TZ`.
+## Resuming Sessions
 
-## Artifacts generated
+When you resume a session, `ais ctx` updates the existing transcript directory instead of creating a new one.
 
-Each output directory includes:
+### Codex Resume
 
-- `index.html`, `page-*.html` — transcript pages
-- `source_match.json` — why the source JSONL was selected (candidates + scoring)
-- copied native JSONL (`rollout-*.jsonl` for Codex or `<uuid>.jsonl` for Claude)
-- `export_runs.jsonl` — export metadata (used for resumable backfills)
+```bash
+# Resume the most recent Codex session
+ais ctx "Continue checkout fix" --codex resume
+
+# Resume a specific session by ID
+ais ctx "Continue checkout fix" --codex resume 01abc234-5678-def0-1234-56789abcdef0
+```
+
+### Claude Resume
+
+```bash
+# Resume the most recent Claude session
+ais ctx "Continue test coverage" --claude --continue
+
+# Resume a specific session
+ais ctx "Continue test coverage" --claude --resume 01abc234-5678-def0-1234-56789abcdef0
+```
+
+### How Resume Works
+
+When you resume:
+
+1. `ais ctx` looks for an existing session directory with a matching label
+2. If a session ID is provided, it also matches against `source_match.json`
+3. The transcript is regenerated to include both old and new content
+4. `export_runs.jsonl` tracks each export window for delta-aware backfills
+
+---
+
+## Passing Arguments
+
+Any arguments after `--codex` or `--claude` are forwarded to the underlying tool:
+
+```bash
+# Pass Codex arguments
+ais ctx "My session" --codex --model o3-mini
+ais ctx "My session" --codex --quiet
+
+# Pass Claude arguments
+ais ctx "My session" --claude --model opus
+ais ctx "My session" --claude --no-auto-compact
+```
+
+---
+
+## Output Directory Structure
+
+### Codex Sessions
+
+```
+<repo-root>/.codex/sessions/2026-01-02-1435_Fix_Checkout_Bug/
+├── index.html           # Timeline of all prompts
+├── page-001.html        # First 5 conversations
+├── page-002.html        # Next 5 conversations (if needed)
+├── rollout-abc123.jsonl # Copy of the original log
+├── source_match.json    # How the log file was selected
+└── export_runs.jsonl    # Export metadata
+```
+
+### Claude Sessions
+
+```
+<repo-root>/.claude/sessions/2026-01-02-1435_Add_Tests/
+├── index.html
+├── page-001.html
+├── abc123-def4-5678.jsonl
+├── source_match.json
+└── export_runs.jsonl
+```
+
+### Directory Name Format
+
+The directory name follows this pattern:
+
+```
+<STAMP>_<SANITIZED_LABEL>[_N]
+```
+
+Where:
+- `STAMP` = `YYYY-MM-DD-HHMM` in your configured timezone
+- `SANITIZED_LABEL` = Your label with spaces replaced by underscores, special characters removed
+- `_N` = Disambiguation suffix if a directory with this name exists
+
+**Examples:**
+
+| Label | Directory Name |
+|-------|----------------|
+| "Fix login bug" | `2026-01-02-1435_Fix_login_bug/` |
+| "Add OAuth 2.0 support" | `2026-01-02-1435_Add_OAuth_20_support/` |
+| "Debug!!!" | `2026-01-02-1435_Debug/` |
+
+---
+
+## Generated Files Explained
+
+### `index.html`
+
+The main entry point. Contains:
+- Session metadata (label, start time, duration)
+- A timeline of all prompts with:
+  - Preview of each prompt
+  - Tool call counts (Bash, Edit, Write, etc.)
+  - Commit hashes (linked to GitHub if configured)
+  - Pass/fail indicators for test runs
+- Links to paginated conversation pages
+
+### `page-*.html`
+
+Each page contains up to 5 full conversations (prompt + response + tool calls). Pagination keeps individual pages fast to load even for long sessions.
+
+### `source_match.json`
+
+Explains how the source log file was selected:
+
+```json
+{
+  "best": {
+    "path": "/Users/you/.codex/sessions/2026/01/02/rollout-abc123.jsonl",
+    "score": 0.5,
+    "cwd_match": true,
+    "start_ts": "2026-01-02T14:35:00.123Z",
+    "end_ts": "2026-01-02T16:22:45.678Z"
+  },
+  "candidates": [
+    // Up to 25 other files that were considered
+  ]
+}
+```
+
+This is invaluable for debugging if the wrong transcript appears.
+
+### `export_runs.jsonl`
+
+Tracks each export run for this session directory:
+
+```jsonl
+{"start": "2026-01-02T14:35:00Z", "end": "2026-01-02T16:22:00Z", "exported_at": "2026-01-02T16:22:05Z"}
+{"start": "2026-01-03T09:00:00Z", "end": "2026-01-03T11:30:00Z", "exported_at": "2026-01-03T11:30:10Z"}
+```
+
+This enables:
+- Delta-only changelog entries for resumed sessions
+- Tracking how the transcript has grown over time
+
+---
 
 ## Configuration
 
-Run `ais setup` to write:
+### Setup Wizard
 
-- Global config: OS-specific user config dir
-- Per-repo config: `<repo-root>/.ai-code-sessions.toml` (or `.ais.toml`)
-
-Environment variables override config:
-
-- `CTX_TZ`, `CTX_CODEX_CMD`, `CTX_CLAUDE_CMD`
-- `CTX_CHANGELOG`, `CTX_ACTOR`, `CTX_CHANGELOG_EVALUATOR`, `CTX_CHANGELOG_MODEL`, `CTX_CHANGELOG_CLAUDE_THINKING_TOKENS`
-
-## Optional: shell alias
-
-If you prefer typing `ctx`:
+Run the interactive wizard to configure all options:
 
 ```bash
+ais setup
+```
+
+### Config File
+
+Create `.ai-code-sessions.toml` in your project root:
+
+```toml
+[ctx]
+tz = "America/Los_Angeles"    # Timezone for folder names
+
+[changelog]
+enabled = true                 # Auto-generate changelog entries
+actor = "your-github-username" # Who gets credited
+evaluator = "codex"           # "codex" or "claude"
+```
+
+### Environment Variables
+
+For quick overrides or CI/CD:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `CTX_TZ` | Timezone for folder names | `America/New_York` |
+| `CTX_CODEX_CMD` | Override Codex executable | `/usr/local/bin/codex` |
+| `CTX_CLAUDE_CMD` | Override Claude executable | `/usr/local/bin/claude` |
+| `CTX_CHANGELOG` | Enable changelog | `1` or `true` |
+| `CTX_ACTOR` | Changelog actor | `your-username` |
+
+---
+
+## Tips and Best Practices
+
+### Write Descriptive Labels
+
+Labels appear in:
+- The transcript header
+- Directory names
+- Changelog entries
+
+Good labels make sessions easy to find later:
+
+```bash
+# Good: Specific and descriptive
+ais ctx "Fix race condition in CartService.checkout()" --codex
+ais ctx "Add unit tests for OAuth token refresh" --claude
+ais ctx "Refactor database connection pooling for MySQL 8" --codex
+
+# Bad: Vague and unhelpful
+ais ctx "fix bug" --codex
+ais ctx "work" --claude
+ais ctx "stuff" --codex
+```
+
+### Use Resume for Multi-Session Tasks
+
+For tasks that span multiple sessions:
+
+```bash
+# Day 1: Start the migration
+ais ctx "Migrate from REST to GraphQL" --codex
+# ... work, then exit
+
+# Day 2: Continue
+ais ctx "Continue GraphQL migration" --codex resume
+# The transcript includes both sessions
+
+# Day 3: Keep going
+ais ctx "Finish GraphQL migration" --codex resume
+# All three sessions in one transcript
+```
+
+### Add a Shell Alias
+
+If you find yourself typing `ais ctx` frequently:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
 alias ctx='ais ctx'
 ```
+
+Then:
+
+```bash
+ctx "Fix the bug" --codex
+ctx "Add tests" --claude
+```
+
+### Ignore Session Artifacts in Git
+
+Add to your `.gitignore`:
+
+```gitignore
+# AI session artifacts (transcripts contain full code context)
+.codex/sessions/
+.claude/sessions/
+.changelog/
+```
+
+The setup wizard (`ais setup`) can do this for you.
+
+---
+
+## Common Issues
+
+### "No matching Codex rollout files found"
+
+Codex isn't writing session logs, or they're in an unexpected location.
+
+```bash
+# Check if logs exist
+ls -la ~/.codex/sessions/
+
+# Try exporting a known file directly
+ais json ~/.codex/sessions/2026/01/02/rollout-abc.jsonl -o ./test --open
+```
+
+### "Transcript picked the wrong session"
+
+When running concurrent sessions, the matching algorithm occasionally picks the wrong one.
+
+```bash
+# Check what was selected
+cat .codex/sessions/*/source_match.json | jq .best.path
+
+# Re-export with the correct file
+ais json /correct/path/to/rollout.jsonl -o .codex/sessions/my-session --json
+```
+
+### "Terminal colors not working"
+
+This shouldn't happen—`ais ctx` runs the underlying tool directly, not through a PTY. If you're seeing issues:
+
+1. Make sure you're using `ais ctx`, not some older PTY-based approach
+2. Check that your terminal emulator supports colors
+3. File an issue with details about your environment
+
+See [troubleshooting.md](troubleshooting.md) for more solutions.

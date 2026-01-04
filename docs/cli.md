@@ -1,79 +1,216 @@
-# CLI
+# CLI Reference
 
-This project’s CLI converts native session logs into clean, mobile-friendly HTML transcripts with pagination.
+The `ai-code-sessions` CLI converts native AI session logs into clean, mobile-friendly HTML transcripts with pagination.
 
-Command names:
+## Command Names
 
-- `ai-code-sessions`
-- `ais` (short alias)
-- `ai-code-transcripts` (legacy alias)
+You can use any of these names to invoke the CLI:
 
-It supports:
+| Command | Description |
+|---------|-------------|
+| `ais` | Short alias (recommended) |
+| `ai-code-sessions` | Full name |
+| `ai-code-transcripts` | Legacy alias (for compatibility) |
 
-- **Codex CLI** rollout logs (`~/.codex/sessions/**/rollout-*.jsonl`)
-- **Claude Code** local logs (`~/.claude/projects/**/<uuid>.jsonl`)
-- Claude web-import sessions via the Anthropic API (inherited from the upstream tool)
+## Supported Log Formats
 
-## Running it
+The CLI can process logs from:
 
-### Install (recommended)
+- **Codex CLI** — `~/.codex/sessions/**/rollout-*.jsonl`
+- **Claude Code** — `~/.claude/projects/**/<uuid>.jsonl`
+- **Claude Web Export** — JSON files exported from claude.ai
 
-Use `pipx` to install the CLI globally in an isolated environment:
+---
+
+## Installation
+
+### Using pipx (Recommended)
 
 ```bash
+# Install globally in an isolated environment
 pipx install ai-code-sessions
 pipx ensurepath
-```
 
-Then run:
-
-```bash
+# Verify installation
 ais --help
-ai-code-sessions --help
 ```
 
-### Local development
+### For Development
 
-If you’re hacking on this repo, use `uv`:
+If you're hacking on this repo:
 
 ```bash
+# Clone the repo
+git clone https://github.com/hbruss/ai-code-sessions.git
+cd ai-code-sessions
+
+# Run with uv
 uv run --project . ai-code-sessions --help
 ```
 
+---
+
 ## Commands
 
-### `json`
+### `ais setup`
 
-Convert a specific JSON or JSONL file to HTML.
-
-Works with:
-
-- Codex rollout JSONL
-- Claude Code JSONL
-- Claude web-export JSON
+Run an interactive setup wizard to configure global and per-repo settings.
 
 ```bash
-ai-code-sessions json /path/to/session.jsonl -o ./out --open
-ai-code-sessions json /path/to/session.jsonl -o ./out --label "My session name"
-ai-code-sessions json https://example.com/session.jsonl -o ./out
+ais setup
 ```
 
-Options:
+**What it does:**
 
-- `-o/--output`: output directory
-- `-a/--output-auto`: create output subdirectory named after input stem
-- `--label`: label shown in the transcript header
-- `--json`: copy the input JSON/JSONL file into the output directory
-- `--repo owner/name`: enables GitHub commit links in the transcript if commit output is detected
-- `--open`: open `index.html` after generating
-- `--gist`: publish HTML pages to a GitHub Gist (see `docs/privacy.md`)
+1. Asks for your GitHub username (for changelog attribution)
+2. Sets your preferred timezone for session folder names
+3. Configures changelog generation preferences
+4. Optionally updates your `.gitignore`
 
-### `find-source`
+**Options:**
 
-Given a time window + working directory, find the most likely native JSONL source file.
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Target git repo (defaults to current repo) |
+| `--global / --no-global` | Write global config (default: yes) |
+| `--repo / --no-repo` | Write per-repo config (default: yes) |
+| `--force` | Overwrite existing config files |
+
+**Examples:**
 
 ```bash
-ai-code-sessions find-source \
+# Run full setup wizard
+ais setup
+
+# Only update global config
+ais setup --no-repo
+
+# Only update repo config
+ais setup --no-global
+
+# Force overwrite existing configs
+ais setup --force
+```
+
+---
+
+### `ais ctx`
+
+Start a labeled AI coding session with automatic transcript export when you finish.
+
+**This is the recommended way to use this tool.** It wraps Codex or Claude, preserving all terminal colors and interactivity.
+
+```bash
+ais ctx "Your descriptive label" --codex
+ais ctx "Your descriptive label" --claude
+```
+
+**Examples:**
+
+```bash
+# Start a new Codex session
+ais ctx "Fix authentication race condition" --codex
+
+# Start a new Claude session
+ais ctx "Add comprehensive test coverage" --claude
+
+# Resume the most recent Codex session
+ais ctx "Continue auth fix" --codex resume
+
+# Resume a specific Codex session by ID
+ais ctx "Continue auth fix" --codex resume abc123def
+
+# Resume a Claude session
+ais ctx "Continue testing" --claude --continue
+
+# Resume a specific Claude session
+ais ctx "Continue testing" --claude --resume abc123def
+```
+
+**Output directory:**
+
+Sessions are saved to your project repo:
+
+- Codex: `<repo>/.codex/sessions/<TIMESTAMP>_<LABEL>/`
+- Claude: `<repo>/.claude/sessions/<TIMESTAMP>_<LABEL>/`
+
+**What gets generated:**
+
+| File | Description |
+|------|-------------|
+| `index.html` | Timeline with prompt summaries and statistics |
+| `page-001.html` | First 5 conversations (paginated) |
+| `page-002.html` | Next 5 conversations, etc. |
+| `source_match.json` | Metadata about which log file was selected |
+| `*.jsonl` | Copy of the original session log |
+| `export_runs.jsonl` | Export metadata for resumable backfills |
+
+See [ctx.md](ctx.md) for detailed documentation.
+
+---
+
+### `ais json`
+
+Convert a specific JSON or JSONL file to an HTML transcript.
+
+Works with:
+- Codex rollout JSONL files
+- Claude Code JSONL files
+- Claude web-export JSON files
+
+**Basic usage:**
+
+```bash
+ais json /path/to/session.jsonl -o ./output-dir
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-o, --output DIR` | Output directory (required) |
+| `-a, --output-auto` | Create subdirectory named after input file |
+| `--label TEXT` | Label shown in transcript header |
+| `--json` | Copy input file to output directory |
+| `--repo OWNER/NAME` | Enable GitHub commit links |
+| `--open` | Open `index.html` after generating |
+| `--gist` | Publish to GitHub Gist |
+
+**Examples:**
+
+```bash
+# Basic conversion
+ais json ~/.codex/sessions/2026/01/02/rollout-abc123.jsonl -o ./my-transcript
+
+# With a custom label
+ais json ~/session.jsonl -o ./out --label "Debugging Memory Leak"
+
+# Copy source file and open in browser
+ais json ~/session.jsonl -o ./out --json --open
+
+# Enable GitHub commit links
+ais json ~/session.jsonl -o ./out --repo myorg/myrepo
+
+# Convert from URL
+ais json https://example.com/session.jsonl -o ./out
+
+# Auto-name output directory
+ais json ~/rollout-abc123.jsonl -a
+# Creates: ./rollout-abc123/index.html
+```
+
+---
+
+### `ais find-source`
+
+Find the native log file that matches a given time window and working directory.
+
+This is primarily used internally by `ais ctx`, but can be helpful for debugging.
+
+**Usage:**
+
+```bash
+ais find-source \
   --tool codex \
   --cwd "$PWD" \
   --project-root "$(git rev-parse --show-toplevel)" \
@@ -81,79 +218,234 @@ ai-code-sessions find-source \
   --end 2026-01-02T09:16:57.576Z
 ```
 
-This prints the chosen file path.
+**Options:**
 
-### `export-latest`
+| Option | Description |
+|--------|-------------|
+| `--tool` | `codex` or `claude` (required) |
+| `--cwd PATH` | Working directory where session started |
+| `--project-root PATH` | Git repository root |
+| `--start ISO_TIMESTAMP` | Session start time (UTC) |
+| `--end ISO_TIMESTAMP` | Session end time (UTC) |
+| `--debug-json PATH` | Write debug info to JSON file |
 
-This is the command `ais ctx` uses. It:
-
-1. Selects the best native JSONL source file using `find-source`
-2. Writes `source_match.json` into the output directory
-3. Generates `index.html` + `page-*.html`
-4. Optionally copies the source JSONL file into the output dir (`--json`)
-5. Optionally appends a changelog entry (`--changelog`, see `docs/changelog.md`)
-
-Example:
+**Example with debug output:**
 
 ```bash
-ai-code-sessions export-latest \
+ais find-source \
+  --tool codex \
+  --cwd /home/user/myproject \
+  --project-root /home/user/myproject \
+  --start 2026-01-02T14:00:00Z \
+  --end 2026-01-02T16:30:00Z \
+  --debug-json /tmp/source_debug.json
+
+# Then examine candidates
+cat /tmp/source_debug.json | jq '.candidates[:5]'
+```
+
+---
+
+### `ais export-latest`
+
+Export the most recent session matching a time window. This is what `ais ctx` calls internally.
+
+**Usage:**
+
+```bash
+ais export-latest \
   --tool codex \
   --cwd "$PWD" \
   --project-root "$(git rev-parse --show-toplevel)" \
   --start 2026-01-02T07:25:55.212Z \
   --end 2026-01-02T09:16:57.576Z \
   -o ./.codex/sessions/2026-01-02-0000_My_Session \
-  --label "My Session" \
+  --label "My Session"
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--tool` | `codex` or `claude` (required) |
+| `--cwd PATH` | Working directory |
+| `--project-root PATH` | Git repository root |
+| `--start ISO_TIMESTAMP` | Session start time |
+| `--end ISO_TIMESTAMP` | Session end time |
+| `-o, --output DIR` | Output directory (required) |
+| `--label TEXT` | Session label |
+| `--json` | Copy source JSONL to output |
+| `--changelog` | Generate changelog entry |
+| `--no-changelog` | Disable changelog |
+| `--changelog-actor TEXT` | Override actor for changelog |
+| `--changelog-evaluator TEXT` | `codex` or `claude` |
+| `--changelog-model TEXT` | Model override |
+
+**Example with changelog:**
+
+```bash
+ais export-latest \
+  --tool codex \
+  --cwd "$PWD" \
+  --project-root "$(git rev-parse --show-toplevel)" \
+  --start 2026-01-02T14:00:00Z \
+  --end 2026-01-02T16:30:00Z \
+  -o ./.codex/sessions/2026-01-02-1400_Fix_Auth \
+  --label "Fix Authentication" \
   --json \
-  --changelog
+  --changelog \
+  --changelog-actor "myusername"
 ```
 
-Changelog options:
+---
 
-- `--changelog/--no-changelog`: enable/disable changelog generation (default can be set via `CTX_CHANGELOG=1` or `AI_CODE_SESSIONS_CHANGELOG=1`)
-- `--changelog-actor`: override `actor` (and therefore the output file under `.changelog/<actor>/entries.jsonl`)
-- `--changelog-evaluator codex|claude`: which CLI to use for changelog evaluation (default: `codex`)
-- `--changelog-model`: override the evaluator model (Codex default: `gpt-5.2` with `xhigh` reasoning; Claude default: `opus` with max thinking)
+### `ais changelog backfill`
 
-### Claude-only commands (inherited)
+Generate changelog entries for existing session directories that were exported before changelog generation was enabled.
 
-These commands are inherited from Simon’s tool and are still present:
-
-- `local` (default) — interactive picker from `~/.claude/projects`
-- `web` — fetch sessions via the Claude API (requires credentials)
-- `all` — build a browsable archive for all local Claude sessions
-
-### `changelog backfill`
-
-Generate `.changelog/<actor>/entries.jsonl` entries from existing session output directories:
+**Usage:**
 
 ```bash
-ai-code-sessions changelog backfill --project-root "$(git rev-parse --show-toplevel)" --actor "your-github-username"
-ai-code-sessions changelog backfill --sessions-dir ./.codex/sessions --actor "your-github-username"
+ais changelog backfill --project-root "$(git rev-parse --show-toplevel)"
 ```
 
-Backfill evaluation options:
+**Options:**
 
-- `--evaluator codex|claude` (default: `codex`)
-- `--model TEXT`: override the evaluator model (Codex default: `gpt-5.2` + `xhigh`; Claude default: `opus` + max thinking)
-- `--max-concurrency INT`: max concurrent evaluator runs (Claude evaluator only; default: 5). Use `--max-concurrency 1` if you want to pair with `--limit`.
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Git repo with session outputs |
+| `--sessions-dir PATH` | Specific sessions directory |
+| `--actor TEXT` | Changelog actor (username) |
+| `--evaluator TEXT` | `codex` or `claude` (default: `codex`) |
+| `--model TEXT` | Model override |
+| `--max-concurrency N` | Max concurrent evaluations (Claude only, default: 5) |
+| `--limit N` | Process only N sessions (for testing) |
 
-Example (use Claude Code CLI for evaluation):
+**Examples:**
 
 ```bash
-ai-code-sessions changelog backfill --evaluator claude --model opus --max-concurrency 5 --actor "your-github-username"
+# Backfill all sessions in current repo
+ais changelog backfill --project-root "$(git rev-parse --show-toplevel)"
+
+# Backfill a specific sessions directory
+ais changelog backfill --sessions-dir ./.codex/sessions --actor "myusername"
+
+# Use Claude as the evaluator
+ais changelog backfill --evaluator claude --model opus
+
+# Limit concurrency for rate limiting
+ais changelog backfill --evaluator claude --max-concurrency 2
+
+# Process only 5 sessions (useful for testing)
+ais changelog backfill --limit 5 --max-concurrency 1
 ```
 
-## What the HTML includes
+**Notes:**
 
-The transcript includes:
+- If `export_runs.jsonl` exists in a session directory, backfill can generate **delta-only** entries for resumed sessions
+- Without it, backfill creates a single entry per session directory
+- If the evaluator hits rate limits (`HTTP 429`), backfill halts early so you can retry later
 
-- User + assistant messages
-- Tool calls and outputs (including diffs / patch blocks when present)
-- “Thinking” blocks (where available)
+---
 
-For Codex, we map:
+### Claude-Specific Commands (Inherited)
 
-- `function_call` / `custom_tool_call` → tool-use blocks
-- `function_call_output` → tool-result blocks
-- `reasoning.summary` → thinking blocks
+These commands are inherited from Simon Willison's original `claude-code-transcripts` tool:
+
+#### `ais local`
+
+Interactive picker for local Claude sessions.
+
+```bash
+ais local
+ais local -o ./output-dir
+ais local --open
+```
+
+#### `ais web`
+
+Fetch Claude sessions via the API (requires credentials).
+
+```bash
+ais web
+ais web <session-id>
+ais web -o ./output-dir --open
+```
+
+#### `ais all`
+
+Build a browsable archive of all local Claude sessions.
+
+```bash
+ais all -o ./archive
+ais all --source ~/.claude/projects
+```
+
+---
+
+## What the HTML Includes
+
+The generated transcript includes:
+
+- **User messages** — Your prompts with markdown formatting preserved
+- **Assistant messages** — AI responses with text, code blocks, and explanations
+- **Tool calls** — Bash commands, file edits, web searches, etc.
+- **Tool outputs** — Command output, diffs, API responses (syntax-highlighted)
+- **Thinking blocks** — AI reasoning (where available)
+
+For Codex sessions, we map:
+
+| Codex Format | Rendered As |
+|--------------|-------------|
+| `function_call` / `custom_tool_call` | Tool-use blocks |
+| `function_call_output` | Tool-result blocks |
+| `reasoning.summary` | Thinking blocks |
+
+---
+
+## Tips and Best Practices
+
+### Label Your Sessions Well
+
+Good labels make transcripts easy to find later:
+
+```bash
+# Good labels
+ais ctx "Fix checkout race condition in CartService" --codex
+ais ctx "Add integration tests for OAuth flow" --claude
+ais ctx "Refactor database connection pooling" --codex
+
+# Less helpful labels
+ais ctx "debug" --codex
+ais ctx "work" --claude
+ais ctx "stuff" --codex
+```
+
+### Use Resume for Long Tasks
+
+When working on something over multiple sessions:
+
+```bash
+# Day 1
+ais ctx "Migrate to new API version" --codex
+# ... work, then exit
+
+# Day 2: resume the same transcript
+ais ctx "Continue API migration" --codex resume
+```
+
+### Check Source Matching
+
+If a transcript seems wrong, check `source_match.json`:
+
+```bash
+cat .codex/sessions/*/source_match.json | jq .best.path
+```
+
+If it picked the wrong file, re-export manually:
+
+```bash
+ais json /correct/path/to/rollout-xyz.jsonl \
+  -o .codex/sessions/my-session \
+  --json
+```
