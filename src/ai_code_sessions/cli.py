@@ -103,7 +103,7 @@ def setup_cmd(project_root, write_global, write_repo, force):
         evaluator = evaluator.strip().lower()
         if evaluator == "codex":
             model = questionary.text(
-                "Optional model override (e.g. o3-mini, gpt-4.1); leave blank for default:",
+                "Optional model override (e.g. gpt-5.2-codex, gpt-5.1-codex-mini); leave blank for default:",
                 default=default_model,
             ).ask()
             if model is None:

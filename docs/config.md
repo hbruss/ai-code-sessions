@@ -75,11 +75,10 @@ User-wide defaults that apply to all projects.
 | Linux | `~/.config/ai-code-sessions/config.toml` |
 | Windows | `%APPDATA%\ai-code-sessions\config.toml` |
 
-Override the location:
-
-```bash
-export AI_CODE_SESSIONS_CONFIG="/custom/path/to/config.toml"
-```
+> **Override:** Set `AI_CODE_SESSIONS_CONFIG` to use a custom global config path:
+> ```bash
+> export AI_CODE_SESSIONS_CONFIG="/custom/path/to/config.toml"
+> ```
 
 ### Per-Repo Config
 
@@ -132,7 +131,7 @@ claude_cmd = "claude"
 enabled = true
 actor = "jsmith"
 evaluator = "claude"
-model = "opus"
+model = "opus"  # Use a model supported by the selected evaluator CLI
 claude_thinking_tokens = 16384
 ```
 
@@ -160,7 +159,7 @@ Environment variables override config file settings. Useful for:
 | `CTX_CHANGELOG` | Enable changelog (`1`, `true`) | disabled |
 | `CTX_ACTOR` | Changelog actor (username) | auto-detected |
 | `CTX_CHANGELOG_EVALUATOR` | `codex` or `claude` | `codex` |
-| `CTX_CHANGELOG_MODEL` | Model for evaluator | tool default |
+| `CTX_CHANGELOG_MODEL` | Model for evaluator (must be supported by selected CLI) | tool default |
 | `CTX_CHANGELOG_CLAUDE_THINKING_TOKENS` | Max thinking tokens | `8192` |
 
 ### Alternative Variable Names

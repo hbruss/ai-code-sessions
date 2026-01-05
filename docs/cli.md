@@ -16,7 +16,7 @@ You can use any of these names to invoke the CLI:
 
 The CLI can process logs from:
 
-- **Codex CLI** — `~/.codex/sessions/**/rollout-*.jsonl`
+- **Codex CLI** — `~/.codex/sessions/**/rollout-*.jsonl` (or `$CODEX_HOME/sessions/...` if `CODEX_HOME` is set)
 - **Claude Code** — `~/.claude/projects/**/<uuid>.jsonl`
 - **Claude Web Export** — JSON files exported from claude.ai
 
@@ -165,6 +165,8 @@ See [ctx.md](ctx.md) for detailed documentation.
 
 Pick a previous session from the current repo and resume it with a friendly picker.
 
+**Alias:** `ais ctx-resume`
+
 ```bash
 # Resume a Codex session (interactive list)
 ais resume codex
@@ -216,8 +218,13 @@ ais json /path/to/session.jsonl -o ./output-dir
 | `--repo OWNER/NAME` | Enable GitHub commit links |
 | `--open` | Open `index.html` after generating |
 | `--gist` | Publish to GitHub Gist |
-| `--output-mode` | `merge`, `overwrite`, or `clean` output directories |
+| `--output-mode` | `merge` (update existing), `overwrite` (replace files), or `clean` (delete dir first) |
 | `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count |
+
+**When to use each output mode:**
+- `merge` (default): Safe for resumed sessions; only updates changed files
+- `overwrite`: Replace existing files but keep other files in the directory
+- `clean`: Start fresh; use when the old export is corrupt or you want a clean slate
 
 **Examples:**
 
@@ -402,7 +409,7 @@ ais changelog backfill --project-root "$(git rev-parse --show-toplevel)"
 | `--sessions-dir PATH` | Specific sessions directory |
 | `--actor TEXT` | Changelog actor (username) |
 | `--evaluator TEXT` | `codex` or `claude` (default: `codex`) |
-| `--model TEXT` | Model override |
+| `--model TEXT` | Model override (must be supported by evaluator CLI) |
 | `--max-concurrency N` | Max concurrent evaluations (Claude only, default: 5) |
 | `--limit N` | Process only N sessions (for testing) |
 

@@ -48,6 +48,8 @@ Assume every transcript file could contain secrets:
 - `source_match.json` (contains file paths)
 - `.changelog/*/entries.jsonl` (contains file paths and summaries)
 
+> **Note:** The HTML transcripts include an embedded search index for offline `file://` viewing. This index contains searchable text from your session, so it also contains any sensitive content that appeared in prompts or responses.
+
 ### 2. Add to `.gitignore`
 
 Prevent accidental commits:

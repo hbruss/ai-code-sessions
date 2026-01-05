@@ -60,14 +60,17 @@ ls -la .codex/sessions/ || ls -la .claude/sessions/
 **Causes:**
 
 1. Codex didn't write any logs
-2. Logs are in an unexpected location
+2. Logs are in an unexpected location (check if `CODEX_HOME` is set)
 3. Time window doesn't match
 
 **Solutions:**
 
 ```bash
-# Check if any Codex logs exist
+# Check if any Codex logs exist (default location)
 find ~/.codex/sessions -name "rollout-*.jsonl" | head -5
+
+# If CODEX_HOME is set, check there instead
+[ -n "$CODEX_HOME" ] && find "$CODEX_HOME/sessions" -name "rollout-*.jsonl" | head -5
 
 # List today's logs
 ls -la ~/.codex/sessions/$(date +%Y)/$(date +%m)/$(date +%d)/
@@ -81,8 +84,9 @@ ais json ~/.codex/sessions/2026/01/02/rollout-abc.jsonl -o ./test --open
 **Causes:**
 
 1. Claude didn't write any logs
-2. Project path encoding mismatch
+2. Project path encoding mismatch (Claude encodes paths as hyphenated absolute paths)
 3. Time window doesn't match
+4. Using a non-default Claude projects directory
 
 **Solutions:**
 
@@ -222,8 +226,8 @@ tail -1 .changelog/*/failures.jsonl | jq '.stderr_tail'
 **Solutions:**
 
 ```bash
-# Install Codex
-npm install -g @openai/codex  # or your installation method
+# Install Codex - see official installation docs:
+# https://platform.openai.com/docs/guides/codex
 
 # Or use Claude evaluator instead
 export CTX_CHANGELOG_EVALUATOR="claude"

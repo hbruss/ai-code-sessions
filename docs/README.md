@@ -25,7 +25,7 @@ ais setup
 # Start a session with automatic export
 ais ctx "Fix the login bug" --codex
 
-# When you exit, a transcript appears in .codex/sessions/
+# When you exit, a transcript appears in .codex/sessions/ (or .claude/sessions/)
 ```
 
 ---
@@ -142,8 +142,11 @@ ais ctx "Big refactor" --codex
 # Day 2
 ais ctx "Continue refactor" --codex resume
 
-# Or pick from a list
+# Or pick from a list (alias: ais ctx-resume)
 ais resume codex
+
+# Resume the newest session without prompting
+ais resume codex --latest
 ```
 
 ---
@@ -152,9 +155,11 @@ ais resume codex
 
 | Tool | Log Location | Session Type |
 |------|--------------|--------------|
-| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `--codex` |
+| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME/sessions/...`) | `--codex` |
 | Claude Code | `~/.claude/projects/<encoded-path>/*.jsonl` | `--claude` |
 | Claude Web Export | Downloaded JSON from claude.ai | `ais json` only |
+
+> **Note:** Codex log discovery honors the `CODEX_HOME` environment variable if set.
 
 ---
 

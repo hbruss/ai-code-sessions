@@ -14,6 +14,14 @@ This guide covers how to release new versions of `ai-code-sessions` to PyPI.
 
 ## Release Process
 
+### 0. Run Tests First
+
+Before releasing, ensure all tests pass:
+
+```bash
+uv run --group dev pytest
+```
+
 ### 1. Update the Version
 
 Edit `pyproject.toml`:

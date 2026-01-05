@@ -54,6 +54,9 @@ uv run --project . ais json --help
 
 # Short form
 uv run --project . ais ctx "Test session" --codex
+
+# Resume picker (alias: ais ctx-resume)
+uv run --project . ais resume codex
 ```
 
 ---

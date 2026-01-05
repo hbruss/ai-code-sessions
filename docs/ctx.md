@@ -70,12 +70,14 @@ When you resume a session, `ais ctx` updates the existing transcript directory i
 ### Codex Resume
 
 ```bash
-# Resume the most recent Codex session
+# Resume a recent Codex session (behavior depends on CLI version)
 ais ctx "Continue checkout fix" --codex resume
 
 # Resume a specific session by ID
 ais ctx "Continue checkout fix" --codex resume 01abc234-5678-def0-1234-56789abcdef0
 ```
+
+> **Tip:** For reliable resume behavior, use `ais resume codex` to pick from a list of prior sessions.
 
 ### Claude Resume
 
@@ -100,21 +102,23 @@ When you resume:
 If you don't want to hunt for session IDs, use the picker:
 
 ```bash
-ais resume codex
-ais resume claude
+ais resume codex      # alias: ais ctx-resume codex
+ais resume claude     # alias: ais ctx-resume claude
 ```
 
 The picker is searchable and shows the session label, timestamp (your configured `ctx.tz`), and quick stats.
+
+> **Note:** `ais resume` is **repo-scoped**—it searches for sessions that match the current project root and uses the sanitized label plus session metadata to locate prior exports.
 
 ---
 
 ## Passing Arguments
 
-Any arguments after `--codex` or `--claude` are forwarded to the underlying tool:
+Any arguments after `--codex` or `--claude` are forwarded to the underlying tool. Model names must be supported by the selected CLI:
 
 ```bash
 # Pass Codex arguments
-ais ctx "My session" --codex --model o3-mini
+ais ctx "My session" --codex --model gpt-5.1-codex-mini
 ais ctx "My session" --codex --quiet
 
 # Pass Claude arguments
@@ -342,12 +346,17 @@ The setup wizard (`ais setup`) can do this for you.
 Codex isn't writing session logs, or they're in an unexpected location.
 
 ```bash
-# Check if logs exist
+# Check if logs exist (default location)
 ls -la ~/.codex/sessions/
+
+# If you have CODEX_HOME set, check there instead
+ls -la "$CODEX_HOME/sessions/"
 
 # Try exporting a known file directly
 ais json ~/.codex/sessions/2026/01/02/rollout-abc.jsonl -o ./test --open
 ```
+
+> **Hint:** Codex logs may live under `$CODEX_HOME` instead of `~/.codex` if that environment variable is set. `ais ctx` honors `CODEX_HOME` when searching for logs.
 
 ### "Transcript picked the wrong session"
 

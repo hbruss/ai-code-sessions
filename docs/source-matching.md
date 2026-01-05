@@ -33,13 +33,14 @@ When `ais ctx` starts, it records the current UTC timestamp. When the underlying
 
 **For Codex:**
 
-1. Look in `~/.codex/sessions/YYYY/MM/DD/` for the relevant dates (±1 day from session)
-2. Filter to files named `rollout-*.jsonl`
-3. Check file modification time (`mtime`) is within `[start - 15min, end + 15min]`
+1. Look in `~/.codex/sessions/YYYY/MM/DD/` (or `$CODEX_HOME/sessions/YYYY/MM/DD/` if `CODEX_HOME` is set) for the relevant dates (±1 day from session)
+2. Date folders are determined using **local time** (your system timezone), not UTC—this can explain edge cases when sessions span midnight
+3. Filter to files named `rollout-*.jsonl`
+4. Check file modification time (`mtime`) is within `[start - 15min, end + 15min]`
 
 **For Claude:**
 
-1. Encode the project root as Claude does (URL-style encoding)
+1. Encode the project root as Claude does: the absolute path with slashes replaced by hyphens and a leading hyphen (e.g., `/Users/you/project` becomes `-Users-you-project`)
 2. Look in `~/.claude/projects/<encoded-path>/`
 3. If that doesn't exist, fall back to `~/.claude/projects/<encoded-cwd>/`
 4. If neither exists, scan all project folders (slower)
