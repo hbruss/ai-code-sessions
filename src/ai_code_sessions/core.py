@@ -3305,15 +3305,74 @@ def _codex_rollout_session_times(filepath: Path):
 
 def _claude_session_times(filepath: Path):
     """Return (start_dt, end_dt, cwd, session_id) for a Claude JSONL session."""
-    first = _peek_first_jsonl_object(filepath)
-    last = _read_last_jsonl_object(filepath)
-    if not isinstance(first, dict):
+    def _extract_timestamp(obj: dict):
+        if not isinstance(obj, dict):
+            return None
+
+        ts = obj.get("timestamp")
+        if isinstance(ts, str):
+            dt = _parse_iso8601(ts)
+            if dt is not None:
+                return dt
+
+        snapshot = obj.get("snapshot")
+        if isinstance(snapshot, dict):
+            snap_ts = snapshot.get("timestamp")
+            if isinstance(snap_ts, str):
+                dt = _parse_iso8601(snap_ts)
+                if dt is not None:
+                    return dt
+
+        return None
+
+    start_dt = None
+    cwd = None
+    session_id = None
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if start_dt is None:
+                    start_dt = _extract_timestamp(obj)
+
+                if cwd is None:
+                    candidate_cwd = obj.get("cwd")
+                    if isinstance(candidate_cwd, str) and candidate_cwd:
+                        cwd = candidate_cwd
+
+                if session_id is None:
+                    candidate_session_id = obj.get("sessionId")
+                    if isinstance(candidate_session_id, str) and candidate_session_id:
+                        session_id = candidate_session_id
+
+                if start_dt is not None and cwd is not None and session_id is not None:
+                    break
+    except OSError:
         return None, None, None, None
 
-    start_dt = _parse_iso8601(first.get("timestamp", ""))
-    end_dt = _parse_iso8601(last.get("timestamp", "")) if isinstance(last, dict) else None
-    cwd = first.get("cwd")
-    session_id = first.get("sessionId")
+    last = _read_last_jsonl_object(filepath)
+    end_dt = _extract_timestamp(last) if isinstance(last, dict) else None
+    if isinstance(last, dict):
+        if cwd is None:
+            candidate_cwd = last.get("cwd")
+            if isinstance(candidate_cwd, str) and candidate_cwd:
+                cwd = candidate_cwd
+        if session_id is None:
+            candidate_session_id = last.get("sessionId")
+            if isinstance(candidate_session_id, str) and candidate_session_id:
+                session_id = candidate_session_id
+
+    if start_dt and end_dt and start_dt > end_dt:
+        start_dt = end_dt
+
     return start_dt, end_dt, cwd, session_id
 
 
@@ -3441,7 +3500,9 @@ def _find_best_claude_session(*, cwd: str, project_root: str, start_dt: datetime
             sess_start = _clamp_dt(sess_start, mtime_dt)
             sess_end = _clamp_dt(sess_end, mtime_dt)
 
-            score = abs((sess_start - start_dt).total_seconds()) + abs((sess_end - end_dt).total_seconds())
+            # Claude session logs may include earlier history when resuming. Prefer end-alignment with
+            # the export window, and only penalize start times that begin after the window start.
+            score = abs((sess_end - end_dt).total_seconds()) + max(0.0, (sess_start - start_dt).total_seconds())
             candidates.append(
                 {
                     "path": str(path),
