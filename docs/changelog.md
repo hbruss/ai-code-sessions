@@ -31,7 +31,7 @@ Each changelog entry includes:
 | `tool` | Session source | `"codex"` |
 | `actor` | Changelog actor | `"russronchi"` |
 | `project` | Repo name | `"ai-code-sessions"` |
-| `project_root` | Repo root path | `"/Users/.../ai-code-sessions"` |
+| `project_root` | Repo root path | `"$HOME/.../ai-code-sessions"` |
 | `label` | Session label | `"Code Review 1"` |
 | `start` / `end` | Session window | `"2026-01-04T10:07:18.024479+00:00"` |
 | `session_dir` | Output directory | `".../.codex/sessions/2026-01-04-0207_Code_Review_1"` |
@@ -307,17 +307,17 @@ For private repos or team visibility, you may want to commit changelogs.
   "tool": "codex",
   "actor": "russronchi",
   "project": "ai-code-sessions",
-  "project_root": "/Users/russronchi/Projects/ai-code-sessions",
+  "project_root": "$HOME/Projects/ai-code-sessions",
   "label": "Fix Checkout Race",
   "start": "2026-01-04T10:07:18.024479+00:00",
   "end": "2026-01-04T10:16:34.084243+00:00",
-  "session_dir": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
+  "session_dir": "$HOME/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
   "continuation_of_run_id": null,
   "transcript": {
-    "output_dir": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
-    "index_html": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/index.html",
-    "source_jsonl": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/rollout-2026-01-04T02-07-18-019b8879-bc8e-7282-b235-118cc5d9949b.jsonl",
-    "source_match_json": "/Users/russronchi/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/source_match.json"
+    "output_dir": "$HOME/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race",
+    "index_html": "$HOME/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/index.html",
+    "source_jsonl": "$HOME/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/rollout-2026-01-04T02-07-18-019b8879-bc8e-7282-b235-118cc5d9949b.jsonl",
+    "source_match_json": "$HOME/Projects/ai-code-sessions/.codex/sessions/2026-01-04-0207_Fix_Checkout_Race/source_match.json"
   },
   "summary": "Fixed race condition in checkout flow causing duplicate orders",
   "bullets": [

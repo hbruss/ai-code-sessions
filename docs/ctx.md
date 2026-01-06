@@ -200,7 +200,7 @@ Explains how the source log file was selected:
 ```json
 {
   "best": {
-    "path": "/Users/you/.codex/sessions/2026/01/02/rollout-abc123.jsonl",
+    "path": "$HOME/.codex/sessions/2026/01/02/rollout-abc123.jsonl",
     "score": 0.5,
     "cwd_match": true,
     "start_ts": "2026-01-02T14:35:00.123Z",

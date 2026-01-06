@@ -40,7 +40,7 @@ When `ais ctx` starts, it records the current UTC timestamp. When the underlying
 
 **For Claude:**
 
-1. Encode the project root as Claude does: the absolute path with slashes replaced by hyphens and a leading hyphen (e.g., `/Users/you/project` becomes `-Users-you-project`)
+1. Encode the project root as Claude does: the absolute path with slashes replaced by hyphens and a leading hyphen (e.g., `$HOME/project` expands to `/Users/<username>/project` on macOS, which becomes `-Users-<username>-project`)
 2. Look in `~/.claude/projects/<encoded-path>/`
 3. If that doesn't exist, fall back to `~/.claude/projects/<encoded-cwd>/`
 4. If neither exists, scan all project folders (slower)
@@ -80,7 +80,7 @@ Every export writes a `source_match.json` file to help with debugging:
 ```json
 {
   "best": {
-    "path": "/Users/you/.codex/sessions/2026/01/02/rollout-abc123.jsonl",
+    "path": "$HOME/.codex/sessions/2026/01/02/rollout-abc123.jsonl",
     "score": 0.523,
     "cwd_match": true,
     "start_ts": "2026-01-02T14:35:00.123Z",
@@ -88,7 +88,7 @@ Every export writes a `source_match.json` file to help with debugging:
   },
   "candidates": [
     {
-      "path": "/Users/you/.codex/sessions/2026/01/02/rollout-def456.jsonl",
+      "path": "$HOME/.codex/sessions/2026/01/02/rollout-def456.jsonl",
       "score": 1842.1,
       "cwd_match": false,
       "start_ts": "2026-01-02T14:00:00.000Z",
