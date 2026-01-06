@@ -51,4 +51,3 @@ def test_legacy_events_only_session_can_recover_native_codex_rollout(monkeypatch
     assert copied.exists()
     assert copied.parent == legacy_dir
     assert copied.name == rollout.name
-

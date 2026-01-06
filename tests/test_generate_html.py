@@ -213,7 +213,6 @@ class TestRenderContentBlock:
         # 200x200 black GIF - minimal valid GIF with black pixels
         # Generated with: from PIL import Image; img = Image.new('RGB', (200, 200), (0, 0, 0)); img.save('black.gif')
         import base64
-        import io
 
         # Create a minimal 200x200 black GIF using raw bytes
         # GIF89a header + logical screen descriptor + global color table + image data
@@ -412,12 +411,8 @@ class TestInjectGistPreviewJs:
     def test_injects_js_into_html_files(self, output_dir):
         """Test that JS is injected before </body> tag."""
         # Create test HTML files
-        (output_dir / "index.html").write_text(
-            "<html><body><h1>Test</h1></body></html>", encoding="utf-8"
-        )
-        (output_dir / "page-001.html").write_text(
-            "<html><body><p>Page 1</p></body></html>", encoding="utf-8"
-        )
+        (output_dir / "index.html").write_text("<html><body><h1>Test</h1></body></html>", encoding="utf-8")
+        (output_dir / "page-001.html").write_text("<html><body><p>Page 1</p></body></html>", encoding="utf-8")
 
         inject_gist_preview_js(output_dir)
 
@@ -443,10 +438,7 @@ class TestInjectGistPreviewJs:
         should scroll to the fragment element after content loads.
         """
         # The JS should check for fragment in URL
-        assert (
-            "location.hash" in GIST_PREVIEW_JS
-            or "window.location.hash" in GIST_PREVIEW_JS
-        )
+        assert "location.hash" in GIST_PREVIEW_JS or "window.location.hash" in GIST_PREVIEW_JS
         # The JS should scroll to the element
         assert "scrollIntoView" in GIST_PREVIEW_JS
 
@@ -457,9 +449,7 @@ class TestInjectGistPreviewJs:
 
         inject_gist_preview_js(output_dir)
 
-        assert (output_dir / "fragment.html").read_text(
-            encoding="utf-8"
-        ) == original_content
+        assert (output_dir / "fragment.html").read_text(encoding="utf-8") == original_content
 
     def test_handles_empty_directory(self, output_dir):
         """Test that empty directories don't cause errors."""
@@ -510,15 +500,10 @@ class TestCreateGist:
     def test_creates_gist_successfully(self, output_dir, monkeypatch):
         """Test successful gist creation."""
         import subprocess
-        import click
 
         # Create test HTML files
-        (output_dir / "index.html").write_text(
-            "<html><body>Index</body></html>", encoding="utf-8"
-        )
-        (output_dir / "page-001.html").write_text(
-            "<html><body>Page</body></html>", encoding="utf-8"
-        )
+        (output_dir / "index.html").write_text("<html><body>Index</body></html>", encoding="utf-8")
+        (output_dir / "page-001.html").write_text("<html><body>Page</body></html>", encoding="utf-8")
 
         # Mock subprocess.run to simulate successful gh gist create
         mock_result = subprocess.CompletedProcess(
@@ -553,9 +538,7 @@ class TestCreateGist:
         import click
 
         # Create test HTML file
-        (output_dir / "index.html").write_text(
-            "<html><body>Test</body></html>", encoding="utf-8"
-        )
+        (output_dir / "index.html").write_text("<html><body>Test</body></html>", encoding="utf-8")
 
         # Mock subprocess.run to simulate gh error
         def mock_run(*args, **kwargs):
@@ -578,9 +561,7 @@ class TestCreateGist:
         import click
 
         # Create test HTML file
-        (output_dir / "index.html").write_text(
-            "<html><body>Test</body></html>", encoding="utf-8"
-        )
+        (output_dir / "index.html").write_text("<html><body>Test</body></html>", encoding="utf-8")
 
         # Mock subprocess.run to simulate gh not found
         def mock_run(*args, **kwargs):
@@ -620,9 +601,7 @@ class TestSessionGistOption:
         monkeypatch.setattr(subprocess, "run", mock_run)
 
         # Mock tempfile.gettempdir to use our tmp_path
-        monkeypatch.setattr(
-            "ai_code_transcripts.tempfile.gettempdir", lambda: str(tmp_path)
-        )
+        monkeypatch.setattr("ai_code_transcripts.tempfile.gettempdir", lambda: str(tmp_path))
 
         runner = CliRunner()
         result = runner.invoke(
@@ -701,9 +680,7 @@ class TestContinuationLongTexts:
                     "timestamp": "2025-01-01T10:00:05.000Z",
                     "message": {
                         "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "I'll start working on this."}
-                        ],
+                        "content": [{"type": "text", "text": "I'll start working on this."}],
                     },
                 },
                 # Continuation prompt (context was summarized)
@@ -764,9 +741,9 @@ class TestContinuationLongTexts:
         # The long text summary should appear in the index
         # This is the bug: currently it doesn't because the continuation
         # conversation is skipped entirely
-        assert (
-            "All tasks completed successfully" in index_html
-        ), "Long text from continuation conversation should appear in index"
+        assert "All tasks completed successfully" in index_html, (
+            "Long text from continuation conversation should appear in index"
+        )
         assert "Redis JavaScript Module" in index_html
 
 
@@ -890,9 +867,7 @@ class TestImportGistOption:
         monkeypatch.setattr(subprocess, "run", mock_run)
 
         # Mock tempfile.gettempdir
-        monkeypatch.setattr(
-            "ai_code_transcripts.tempfile.gettempdir", lambda: str(tmp_path)
-        )
+        monkeypatch.setattr("ai_code_transcripts.tempfile.gettempdir", lambda: str(tmp_path))
 
         runner = CliRunner()
         result = runner.invoke(
@@ -1350,7 +1325,6 @@ class TestOutputAutoOption:
         """Test that json -a uses current directory when -o not specified."""
         from click.testing import CliRunner
         from ai_code_transcripts import cli
-        import os
 
         fixture_path = Path(__file__).parent / "sample_session.json"
 

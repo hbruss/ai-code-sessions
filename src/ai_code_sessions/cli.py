@@ -1,6 +1,72 @@
-from . import core as _core
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-globals().update({k: v for k, v in _core.__dict__.items() if not k.startswith("__")})
+import click
+from click_default_group import DefaultGroup
+import httpx
+import questionary
+
+from .core import (
+    CSS,
+    JS,
+    _append_jsonl,
+    _append_log_line,
+    _backfill_log_path,
+    _choose_copied_jsonl_for_session_dir,
+    _claude_session_times,
+    _codex_rollout_session_times,
+    _collect_repo_sessions,
+    _config_get,
+    _derive_label_from_session_dir,
+    _detect_actor,
+    _ensure_gitignore_ignores,
+    _env_first,
+    _env_truthy,
+    _format_local_dt,
+    _generate_and_append_changelog_entry,
+    _git_toplevel,
+    _global_config_path,
+    _legacy_ctx_metadata,
+    _load_config,
+    _maybe_copy_native_jsonl_into_legacy_session_dir,
+    _now_iso8601,
+    _read_jsonl_objects,
+    _read_last_jsonl_object,
+    _render_config_toml,
+    _repo_config_path,
+    _slugify_actor,
+    configure_logging,
+    create_gist,
+    fetch_session,
+    fetch_sessions,
+    fetch_url_to_tempfile,
+    find_all_sessions,
+    find_best_source_file,
+    find_local_sessions,
+    format_session_for_display,
+    generate_batch_html,
+    generate_html,
+    generate_html_from_session_data,
+    get_template,
+    inject_gist_preview_js,
+    is_url,
+    prepare_output_dir,
+    resolve_config_with_provenance,
+    resolve_credentials,
+)
+
 
 @click.group(cls=DefaultGroup, default="local", default_if_no_args=True)
 @click.version_option(None, "--version", package_name="ai-code-sessions")
@@ -45,31 +111,19 @@ def cli(verbose, log_file):
 @click.option("--force", is_flag=True, help="Overwrite existing config files.")
 def setup_cmd(project_root, write_global, write_repo, force):
     """Interactive setup wizard (writes config files and optional .gitignore entries)."""
-    root = (
-        Path(project_root).resolve()
-        if project_root
-        else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
-    )
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
 
     global_path = _global_config_path()
     repo_path = _repo_config_path(root)
 
     existing_cfg = _load_config(project_root=root)
     default_actor = (
-        _config_get(existing_cfg, "changelog.actor")
-        or os.environ.get("CTX_ACTOR")
-        or _detect_actor(project_root=root)
+        _config_get(existing_cfg, "changelog.actor") or os.environ.get("CTX_ACTOR") or _detect_actor(project_root=root)
     )
-    default_tz = (
-        _config_get(existing_cfg, "ctx.tz")
-        or os.environ.get("CTX_TZ")
-        or "America/Los_Angeles"
-    )
+    default_tz = _config_get(existing_cfg, "ctx.tz") or os.environ.get("CTX_TZ") or "America/Los_Angeles"
     default_changelog_enabled = bool(_config_get(existing_cfg, "changelog.enabled", False))
     default_evaluator = (
-        _config_get(existing_cfg, "changelog.evaluator")
-        or os.environ.get("CTX_CHANGELOG_EVALUATOR")
-        or "codex"
+        _config_get(existing_cfg, "changelog.evaluator") or os.environ.get("CTX_CHANGELOG_EVALUATOR") or "codex"
     )
     default_model = _config_get(existing_cfg, "changelog.model") or ""
     default_claude_tokens = _config_get(existing_cfg, "changelog.claude_thinking_tokens") or 8192
@@ -531,8 +585,7 @@ def export_latest_cmd(
     click_ctx = click.get_current_context(silent=True)
     if click_ctx and click_ctx.get_parameter_source("changelog") == click.core.ParameterSource.DEFAULT:
         env_present = (
-            os.environ.get("AI_CODE_SESSIONS_CHANGELOG") is not None
-            or os.environ.get("CTX_CHANGELOG") is not None
+            os.environ.get("AI_CODE_SESSIONS_CHANGELOG") is not None or os.environ.get("CTX_CHANGELOG") is not None
         )
         if not env_present:
             cfg_enabled = _config_get(cfg, "changelog.enabled")
@@ -595,14 +648,15 @@ def export_latest_cmd(
         entries_rel = f".changelog/{actor_slug}/entries.jsonl"
         failures_rel = f".changelog/{actor_slug}/failures.jsonl"
         try:
-            env_evaluator = (_env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or "").strip()
+            env_evaluator = (
+                _env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or ""
+            ).strip()
             cfg_evaluator = _config_get(cfg, "changelog.evaluator")
-            cfg_evaluator_value = cfg_evaluator.strip() if isinstance(cfg_evaluator, str) and cfg_evaluator.strip() else ""
+            cfg_evaluator_value = (
+                cfg_evaluator.strip() if isinstance(cfg_evaluator, str) and cfg_evaluator.strip() else ""
+            )
             evaluator_value = (
-                (changelog_evaluator or "").strip()
-                or env_evaluator
-                or cfg_evaluator_value
-                or "codex"
+                (changelog_evaluator or "").strip() or env_evaluator or cfg_evaluator_value or "codex"
             ).lower()
             env_model = (_env_first("CTX_CHANGELOG_MODEL", "AI_CODE_SESSIONS_CHANGELOG_MODEL") or "").strip()
             cfg_model = _config_get(cfg, "changelog.model")
@@ -622,13 +676,9 @@ def export_latest_cmd(
                     try:
                         claude_tokens = int(raw_tokens)
                     except ValueError:
-                        raise click.ClickException(
-                            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)"
-                        )
+                        raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)")
                     if claude_tokens <= 0:
-                        raise click.ClickException(
-                            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer"
-                        )
+                        raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
 
             changelog_evaluator_used = evaluator_value
             changelog_model_used = model_value
@@ -877,9 +927,7 @@ def _run_ctx_session(
         completed = subprocess.run(cmd)
         rc = int(completed.returncode)
     except FileNotFoundError:
-        raise click.ClickException(
-            f"Command not found: {tool_cmd!r} (set CTX_CODEX_CMD/CTX_CLAUDE_CMD to override)"
-        )
+        raise click.ClickException(f"Command not found: {tool_cmd!r} (set CTX_CODEX_CMD/CTX_CLAUDE_CMD to override)")
     except KeyboardInterrupt:
         rc = 130
     except Exception as e:
@@ -1141,11 +1189,7 @@ def config_cli():
 @click.option("--json", "as_json", is_flag=True, help="Output resolved config as JSON.")
 def config_show_cmd(project_root, as_json):
     """Show resolved configuration values and their provenance."""
-    root = (
-        Path(project_root).resolve()
-        if project_root
-        else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
-    )
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
     resolved, provenance = resolve_config_with_provenance(project_root=root)
     if as_json:
         click.echo(
@@ -1176,11 +1220,7 @@ def config_show_cmd(project_root, as_json):
 @click.option("--open", "open_browser", is_flag=True, help="Open the archive in your default browser.")
 def archive_cmd(project_root, output, open_browser):
     """Generate a repo-level archive for .codex/.claude sessions."""
-    root = (
-        Path(project_root).resolve()
-        if project_root
-        else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
-    )
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
     cfg = _load_config(project_root=root)
     tz = _resolve_ctx_tz(cfg=cfg, tz=None)
     output_dir = Path(output) if output else (root / ".ais-archive")
@@ -1353,9 +1393,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         progress_thread: threading.Thread | None = None
         progress_stop.clear()
         progress_started = time.monotonic()
-        progress_thread = threading.Thread(
-            target=_progress_worker, args=(len(bases),), daemon=True
-        )
+        progress_thread = threading.Thread(target=_progress_worker, args=(len(bases),), daemon=True)
         progress_thread.start()
 
     def _progress_cleanup() -> None:
@@ -1495,8 +1533,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 
             if dry_run:
                 output_lines.append(
-                    f"Backfill: would process {tool} {session_dir.name} "
-                    f"({start} → {end}) using {copied_jsonl.name}"
+                    f"Backfill: would process {tool} {session_dir.name} ({start} → {end}) using {copied_jsonl.name}"
                 )
                 processed_runs += 1
                 processed_local += 1
@@ -1530,6 +1567,22 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         return processed_local, halted_local, output_lines
 
     if max_concurrency_value > 1:
+        session_jobs: list[tuple[str, Path]] = []
+        for base in bases:
+            if not base.exists():
+                continue
+
+            tool_guess = "unknown"
+            if base.parent.name == ".codex":
+                tool_guess = "codex"
+            elif base.parent.name == ".claude":
+                tool_guess = "claude"
+
+            session_dirs = [p for p in base.iterdir() if p.is_dir()]
+            session_dirs.sort(key=lambda p: p.name)
+            for session_dir in session_dirs:
+                session_jobs.append((tool_guess, session_dir))
+
         processed = 0
         completed_sessions = 0
         processed_runs = 0
@@ -1542,9 +1595,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         with ThreadPoolExecutor(max_workers=max_concurrency_value) as ex:
             futures = [ex.submit(_run_one_session, tool_guess, session_dir) for tool_guess, session_dir in session_jobs]
             if progress_enabled and session_jobs:
-                progress_thread = threading.Thread(
-                    target=_progress_worker, args=(len(session_jobs),), daemon=True
-                )
+                progress_thread = threading.Thread(target=_progress_worker, args=(len(session_jobs),), daemon=True)
                 progress_thread.start()
             for fut in as_completed(futures):
                 proc_count, halted_local, lines = fut.result()
@@ -1667,7 +1718,8 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
                         start=start,
                         end=end,
                         cwd=run_cwd or (legacy_meta.get("cwd") if legacy_meta else None),
-                        codex_resume_id=codex_resume_id or (legacy_meta.get("codex_resume_id") if legacy_meta else None),
+                        codex_resume_id=codex_resume_id
+                        or (legacy_meta.get("codex_resume_id") if legacy_meta else None),
                     )
 
                 if (not start or not end) and copied_jsonl and copied_jsonl.exists():
@@ -1686,8 +1738,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 
                 if dry_run:
                     click.echo(
-                        f"Backfill: would process {tool} {session_dir.name} "
-                        f"({start} → {end}) using {copied_jsonl.name}"
+                        f"Backfill: would process {tool} {session_dir.name} ({start} → {end}) using {copied_jsonl.name}"
                     )
                     processed += 1
                     continue
@@ -1742,9 +1793,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
     help="Auto-name output subdirectory based on session ID (uses -o as parent, or current dir).",
 )
 @click.option("--token", help="API access token (auto-detected from keychain on macOS)")
-@click.option(
-    "--org-uuid", help="Organization UUID (auto-detected from ~/.claude.json)"
-)
+@click.option("--org-uuid", help="Organization UUID (auto-detected from ~/.claude.json)")
 @click.option(
     "--repo",
     help="GitHub repo (owner/name) for commit links. Auto-detected from git push output if not specified.",
@@ -1791,9 +1840,7 @@ def web_cmd(
         try:
             sessions_data = fetch_sessions(token, org_uuid)
         except httpx.HTTPStatusError as e:
-            raise click.ClickException(
-                f"API request failed: {e.response.status_code} {e.response.text}"
-            )
+            raise click.ClickException(f"API request failed: {e.response.status_code} {e.response.text}")
         except httpx.RequestError as e:
             raise click.ClickException(f"Request failed: {e}")
 
@@ -1937,9 +1984,7 @@ def all_cmd(source, output, include_agents, dry_run, open_browser, quiet):
                 click.echo(f"\n  {project['name']} ({len(project['sessions'])} sessions)")
                 for session in project["sessions"][:3]:  # Show first 3
                     mod_time = datetime.fromtimestamp(session["mtime"])
-                    click.echo(
-                        f"    - {session['path'].stem} ({mod_time.strftime('%Y-%m-%d')})"
-                    )
+                    click.echo(f"    - {session['path'].stem} ({mod_time.strftime('%Y-%m-%d')})")
                 if len(project["sessions"]) > 3:
                     click.echo(f"    ... and {len(project['sessions']) - 3} more")
         return
@@ -1966,10 +2011,7 @@ def all_cmd(source, output, include_agents, dry_run, open_browser, quiet):
             click.echo(f"  {failure['project']}/{failure['session']}: {failure['error']}")
 
     if not quiet:
-        click.echo(
-            f"\nGenerated archive with {stats['total_projects']} projects, "
-            f"{stats['total_sessions']} sessions"
-        )
+        click.echo(f"\nGenerated archive with {stats['total_projects']} projects, {stats['total_sessions']} sessions")
         click.echo(f"Output: {output.resolve()}")
 
     if open_browser:

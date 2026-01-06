@@ -84,4 +84,3 @@ def test_find_best_source_file_prefers_long_claude_session_over_short(tmp_path: 
     )
 
     assert match["best"]["path"].endswith("long.jsonl")
-

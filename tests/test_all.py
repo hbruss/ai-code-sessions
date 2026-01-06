@@ -246,9 +246,7 @@ class TestGenerateBatchHtml:
         def on_progress(project_name, session_name, current, total):
             progress_calls.append((project_name, session_name, current, total))
 
-        generate_batch_html(
-            mock_projects_dir, output_dir, progress_callback=on_progress
-        )
+        generate_batch_html(mock_projects_dir, output_dir, progress_callback=on_progress)
 
         # Should be called for each session (3 total)
         assert len(progress_calls) == 3
@@ -432,9 +430,7 @@ class TestJsonCommandWithUrl:
         mock_response.raise_for_status = MagicMock()
 
         runner = CliRunner()
-        with patch(
-            "ai_code_transcripts.httpx.get", return_value=mock_response
-        ) as mock_get:
+        with patch("ai_code_transcripts.httpx.get", return_value=mock_response) as mock_get:
             result = runner.invoke(
                 cli,
                 [
@@ -465,9 +461,7 @@ class TestJsonCommandWithUrl:
         mock_response.raise_for_status = MagicMock()
 
         runner = CliRunner()
-        with patch(
-            "ai_code_transcripts.httpx.get", return_value=mock_response
-        ) as mock_get:
+        with patch("ai_code_transcripts.httpx.get", return_value=mock_response) as mock_get:
             result = runner.invoke(
                 cli,
                 [

@@ -1,5 +1,7 @@
 """Convert Codex CLI and Claude Code session logs to HTML transcripts."""
 
+import webbrowser as webbrowser  # noqa: F401
+
 from . import core as _core
 from .cli import cli
 

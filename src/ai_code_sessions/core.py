@@ -15,19 +15,15 @@ import tempfile
 import threading
 import time
 import tomllib
-import webbrowser
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import click
-from click_default_group import DefaultGroup
 import httpx
 from jinja2 import Environment, PackageLoader
 import markdown
-import questionary
 
 # Set up Jinja2 environment
 _jinja_env = Environment(
@@ -80,14 +76,10 @@ def configure_logging(*, verbosity: int, log_file: Path | None = None) -> None:
 COMMIT_PATTERN = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)")
 
 # Regex to detect GitHub repo from git push output (e.g., github.com/owner/repo/pull/new/branch)
-GITHUB_REPO_PATTERN = re.compile(
-    r"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/pull/new/"
-)
+GITHUB_REPO_PATTERN = re.compile(r"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/pull/new/")
 
 PROMPTS_PER_PAGE = 5
-LONG_TEXT_THRESHOLD = (
-    300  # Characters - text blocks longer than this are shown in index
-)
+LONG_TEXT_THRESHOLD = 300  # Characters - text blocks longer than this are shown in index
 SEARCH_INDEX_TEXT_MAX_CHARS = 2000
 SEARCH_INDEX_SCHEMA_VERSION = 1
 _OUTPUT_PRUNE_GLOBS = ("index.html", "page-*.html", "search_index.json")
@@ -226,11 +218,7 @@ def _get_jsonl_summary(filepath, max_length=200):
                     continue
                 try:
                     obj = json.loads(line)
-                    if (
-                        obj.get("type") == "user"
-                        and not obj.get("isMeta")
-                        and obj.get("message", {}).get("content")
-                    ):
+                    if obj.get("type") == "user" and not obj.get("isMeta") and obj.get("message", {}).get("content"):
                         content = obj["message"]["content"]
                         text = extract_text_from_content(content)
                         if text and not text.startswith("<"):
@@ -383,16 +371,12 @@ def find_all_sessions(folder, include_agents=False):
 
     # Convert to list and sort projects by most recent session
     result = list(projects.values())
-    result.sort(
-        key=lambda p: p["sessions"][0]["mtime"] if p["sessions"] else 0, reverse=True
-    )
+    result.sort(key=lambda p: p["sessions"][0]["mtime"] if p["sessions"] else 0, reverse=True)
 
     return result
 
 
-def generate_batch_html(
-    source_folder, output_dir, include_agents=False, progress_callback=None
-):
+def generate_batch_html(source_folder, output_dir, include_agents=False, progress_callback=None):
     """Generate HTML archive for all sessions in a Claude projects folder.
 
     Creates:
@@ -452,9 +436,7 @@ def generate_batch_html(
 
             # Call progress callback if provided
             if progress_callback:
-                progress_callback(
-                    project["name"], session_name, processed_count, total_session_count
-                )
+                progress_callback(project["name"], session_name, processed_count, total_session_count)
 
         # Generate project index
         _generate_project_index(project, project_dir)
@@ -960,9 +942,7 @@ def _now_iso8601() -> str:
 
 
 def _write_json_schema_tempfile(schema: dict) -> Path:
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".schema.json", delete=False
-    )
+    tmp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".schema.json", delete=False)
     try:
         tmp.write(json.dumps(schema, indent=2, ensure_ascii=False))
         tmp.flush()
@@ -979,9 +959,7 @@ def _compute_run_id(*, tool: str, start: str, end: str, session_dir: Path, sourc
         "session_dir": str(session_dir),
         "source_jsonl": str(source_jsonl),
     }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     return digest[:16]
 
 
@@ -1030,30 +1008,24 @@ def _detect_actor(*, project_root: Path) -> str:
 
     # Fall back to git config values if available.
     try:
-        email = (
-            subprocess.check_output(
-                ["git", "config", "--get", "user.email"],
-                cwd=str(project_root),
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            .strip()
-        )
+        email = subprocess.check_output(
+            ["git", "config", "--get", "user.email"],
+            cwd=str(project_root),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
         if email:
             return email
     except Exception:
         pass
 
     try:
-        name = (
-            subprocess.check_output(
-                ["git", "config", "--get", "user.name"],
-                cwd=str(project_root),
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            .strip()
-        )
+        name = subprocess.check_output(
+            ["git", "config", "--get", "user.name"],
+            cwd=str(project_root),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
         if name:
             return name
     except Exception:
@@ -1677,8 +1649,8 @@ def _build_changelog_digest(
                         touched_deleted |= set(file_ops["deleted"])
                         touched_moved.extend(file_ops["moved"])
                         call["patch_snippet"] = _truncate_text(patch_text, 12000)
-                        patch_files: set[str] = set(file_ops["created"]) | set(file_ops["modified"]) | set(
-                            file_ops["deleted"]
+                        patch_files: set[str] = (
+                            set(file_ops["created"]) | set(file_ops["modified"]) | set(file_ops["deleted"])
                         )
                         for mv in file_ops["moved"]:
                             if not isinstance(mv, dict):
@@ -2136,14 +2108,14 @@ def _run_with_activity_indicator(*, label: str, fn, interval_seconds: float = 1.
         sys.stderr.flush()
 
 
-def _run_codex_changelog_evaluator(*, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None) -> dict:
+def _run_codex_changelog_evaluator(
+    *, prompt: str, schema_path: Path, cd: Path | None = None, model: str | None = None
+) -> dict:
     codex_bin = shutil.which("codex")
     if not codex_bin:
         raise click.ClickException("codex CLI not found on PATH (required for changelog generation)")
 
-    out_file = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".codex-last-message.json", delete=False
-    )
+    out_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".codex-last-message.json", delete=False)
     out_path = Path(out_file.name)
     out_file.close()
 
@@ -2607,7 +2579,9 @@ def _generate_and_append_changelog_entry(
             "summary": summary.strip(),
             "bullets": [str(b).strip() for b in bullets if str(b).strip()][:12],
             "tags": [str(t).strip() for t in tags if str(t).strip()][:24],
-            "touched_files": digest.get("delta", {}).get("touched_files", {"created": [], "modified": [], "deleted": [], "moved": []}),
+            "touched_files": digest.get("delta", {}).get(
+                "touched_files", {"created": [], "modified": [], "deleted": [], "moved": []}
+            ),
             "tests": digest.get("delta", {}).get("tests", []),
             "commits": digest.get("delta", {}).get("commits", []),
             "notes": notes.strip() if isinstance(notes, str) and notes.strip() else None,
@@ -2717,6 +2691,19 @@ def _resume_id_from_jsonl(path: Path, tool: str) -> str | None:
     except OSError:
         return None
     return None
+
+
+def _session_dir_session_id(session_dir: Path) -> str | None:
+    match_path = session_dir / "source_match.json"
+    if not match_path.exists():
+        return None
+    try:
+        data = json.loads(match_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    best = data.get("best") if isinstance(data, dict) else None
+    session_id = best.get("session_id") if isinstance(best, dict) else None
+    return session_id if isinstance(session_id, str) and session_id else None
 
 
 def _session_dir_resume_id(session_dir: Path, tool: str) -> str | None:
@@ -3222,7 +3209,9 @@ def _maybe_copy_native_jsonl_into_legacy_session_dir(
 
     if src is None or not src.exists():
         # Fallback: locate rollout by searching for the first user prompt in the transcript.
-        prompt_text = _legacy_ctx_first_user_input_from_events(session_dir) or _legacy_ctx_first_user_input_from_transcript_md(session_dir)
+        prompt_text = _legacy_ctx_first_user_input_from_events(
+            session_dir
+        ) or _legacy_ctx_first_user_input_from_transcript_md(session_dir)
         if prompt_text:
             src = _find_codex_rollout_by_prompt(prompt_text=prompt_text, start_dt=start_dt, cwd=cwd)
 
@@ -3305,6 +3294,7 @@ def _codex_rollout_session_times(filepath: Path):
 
 def _claude_session_times(filepath: Path):
     """Return (start_dt, end_dt, cwd, session_id) for a Claude JSONL session."""
+
     def _extract_timestamp(obj: dict):
         if not isinstance(obj, dict):
             return None
@@ -3409,7 +3399,7 @@ def _find_best_codex_rollout(*, cwd: str, start_dt: datetime, end_dt: datetime):
     for dt in (start_dt, end_dt):
         local = dt.astimezone()
         for offset in (-1, 0, 1):
-            d = (local.date() + timedelta(days=offset))
+            d = local.date() + timedelta(days=offset)
             candidate_dirs.add(base / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}")
 
     candidates = []
@@ -3593,16 +3583,13 @@ def resolve_credentials(token, org_uuid):
                     "Could not retrieve access token from macOS keychain. "
                     "Make sure you are logged into Claude Code, or provide --token."
                 )
-            raise click.ClickException(
-                "On non-macOS platforms, you must provide --token with your access token."
-            )
+            raise click.ClickException("On non-macOS platforms, you must provide --token with your access token.")
 
     if org_uuid is None:
         org_uuid = get_org_uuid_from_config()
         if org_uuid is None:
             raise click.ClickException(
-                "Could not find organization UUID in ~/.claude.json. "
-                "Provide --org-uuid with your organization UUID."
+                "Could not find organization UUID in ~/.claude.json. Provide --org-uuid with your organization UUID."
             )
 
     return token, org_uuid
@@ -3703,9 +3690,7 @@ def is_json_like(text):
     if not text or not isinstance(text, str):
         return False
     text = text.strip()
-    return (text.startswith("{") and text.endswith("}")) or (
-        text.startswith("[") and text.endswith("]")
-    )
+    return (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]"))
 
 
 def render_todo_write(tool_input, tool_id):
@@ -3788,9 +3773,7 @@ def render_content_block(block):
 
                     commit_hash = match.group(1)
                     commit_msg = match.group(2)
-                    parts.append(
-                        _macros.commit_card(commit_hash, commit_msg, _github_repo)
-                    )
+                    parts.append(_macros.commit_card(commit_hash, commit_msg, _github_repo))
                     last_end = match.end()
 
                 # Add any remaining content after last commit
@@ -4007,10 +3990,7 @@ def is_tool_result_message(message_data):
         return False
     if not content:
         return False
-    return all(
-        isinstance(block, dict) and block.get("type") == "tool_result"
-        for block in content
-    )
+    return all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
 
 
 def render_message(log_type, message_json, timestamp):
@@ -4309,9 +4289,7 @@ def inject_gist_preview_js(output_dir):
         content = html_file.read_text(encoding="utf-8")
         # Insert the gist preview JS before the closing </body> tag
         if "</body>" in content:
-            content = content.replace(
-                "</body>", f"<script>{GIST_PREVIEW_JS}</script>\n</body>"
-            )
+            content = content.replace("</body>", f"<script>{GIST_PREVIEW_JS}</script>\n</body>")
             html_file.write_text(content, encoding="utf-8")
 
 
@@ -4348,9 +4326,7 @@ def create_gist(output_dir, public=False):
         error_msg = e.stderr.strip() if e.stderr else str(e)
         raise click.ClickException(f"Failed to create gist: {error_msg}")
     except FileNotFoundError:
-        raise click.ClickException(
-            "gh CLI not found. Install it from https://cli.github.com/ and run 'gh auth login'."
-        )
+        raise click.ClickException("gh CLI not found. Install it from https://cli.github.com/ and run 'gh auth login'.")
 
 
 def is_url(path: str) -> bool:
@@ -4370,9 +4346,7 @@ def fetch_url_to_tempfile(url: str) -> Path:
     except httpx.RequestError as e:
         raise click.ClickException(f"Failed to fetch URL: {e}")
     except httpx.HTTPStatusError as e:
-        raise click.ClickException(
-            f"Failed to fetch URL: {e.response.status_code} {e.response.reason_phrase}"
-        )
+        raise click.ClickException(f"Failed to fetch URL: {e.response.status_code} {e.response.reason_phrase}")
 
     url_path = url.split("?")[0]
     if url_path.endswith(".jsonl"):
@@ -4436,9 +4410,7 @@ def generate_html(
         if github_repo:
             _LOGGER.info("Auto-detected GitHub repo: %s", github_repo)
         else:
-            _LOGGER.warning(
-                "Could not auto-detect GitHub repo. Commit links will be disabled."
-            )
+            _LOGGER.warning("Could not auto-detect GitHub repo. Commit links will be disabled.")
 
     # Set module-level variable for render functions
     global _github_repo
@@ -4509,9 +4481,7 @@ def generate_html(
             pagination_html=pagination_html,
             messages_html="".join(messages_html),
         )
-        (output_dir / f"page-{page_num:03d}.html").write_text(
-            page_content, encoding="utf-8"
-        )
+        (output_dir / f"page-{page_num:03d}.html").write_text(page_content, encoding="utf-8")
         _LOGGER.info("Generated page-%03d.html", page_num)
 
     # Calculate overall stats and collect all commits for timeline
@@ -4564,16 +4534,12 @@ def generate_html(
 
         stats_html = _macros.index_stats(tool_stats_str, long_texts_html)
 
-        item_html = _macros.index_item(
-            prompt_num, link, conv["timestamp"], rendered_content, stats_html
-        )
+        item_html = _macros.index_item(prompt_num, link, conv["timestamp"], rendered_content, stats_html)
         timeline_items.append((conv["timestamp"], "prompt", item_html))
 
     # Add commits as separate timeline items
     for commit_ts, commit_hash, commit_msg, page_num, conv_idx in all_commits:
-        item_html = _macros.index_commit(
-            commit_hash, commit_msg, commit_ts, _github_repo
-        )
+        item_html = _macros.index_commit(commit_hash, commit_msg, commit_ts, _github_repo)
         timeline_items.append((commit_ts, "commit", item_html))
 
     # Sort by timestamp

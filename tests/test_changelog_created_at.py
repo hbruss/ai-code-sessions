@@ -63,4 +63,3 @@ def test_changelog_created_at_uses_session_start(monkeypatch, tmp_path: Path):
     entries_path = project_root / ".changelog" / "hbruss" / "entries.jsonl"
     entry = json.loads(entries_path.read_text(encoding="utf-8").strip().splitlines()[0])
     assert entry["created_at"] == start
-
