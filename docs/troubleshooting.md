@@ -122,6 +122,23 @@ ais json /correct/path/to/rollout.jsonl \
 
 See [source-matching.md](source-matching.md) for detailed debugging.
 
+### "Could not auto-detect GitHub repo"
+
+**Cause:** The tool couldn't find GitHub repository info in the session.
+
+**What this means:** Commit links in your transcript won't link to GitHub—the commit hash will still be displayed, just not clickable.
+
+**When it happens:**
+
+- **For Codex:** Session metadata didn't include git info (older Codex versions, or not in a git repo)
+- **For Claude:** No git push output with GitHub URLs was captured during the session
+
+**Solutions:**
+
+1. **Upgrade Codex:** v0.79+ records git repository info in session metadata
+2. **Specify manually:** Add `--repo owner/name` to your export command
+3. **Ignore it:** The warning is informational—transcripts work fine without GitHub links
+
 ---
 
 ## CLI Issues

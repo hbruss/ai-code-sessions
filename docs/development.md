@@ -108,6 +108,36 @@ We follow standard Python conventions:
 - `snake_case` for functions and variables
 - `CAPS_SNAKE_CASE` for constants
 
+### Linting and Formatting with Ruff
+
+We use **Ruff** exclusively for linting and formatting (no Black, isort, Flake8, or other tools). Run Ruff via `uv` to keep versions consistent:
+
+```bash
+# Lint (check only)
+uv run --group dev ruff check .
+
+# Lint + auto-fix
+uv run --group dev ruff check --fix .
+
+# Format
+uv run --group dev ruff format .
+
+# Format (check only)
+uv run --group dev ruff format --check .
+
+# Full lint + format
+uv run --group dev ruff check --fix . && uv run --group dev ruff format .
+```
+
+Before commits/PRs that touch Python, prefer non-mutating checks:
+
+```bash
+uv run --group dev ruff check .
+uv run --group dev ruff format --check .
+```
+
+Ruff configuration lives in `pyproject.toml` (line length, ignores, rule selection).
+
 ### Guidelines
 
 1. **Small, well-named functions** — Keep functions focused and add docstrings

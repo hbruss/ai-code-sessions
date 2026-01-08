@@ -215,7 +215,7 @@ ais json /path/to/session.jsonl -o ./output-dir
 | `-a, --output-auto` | Create subdirectory named after input file |
 | `--label TEXT` | Label shown in transcript header |
 | `--json` | Copy input file to output directory |
-| `--repo OWNER/NAME` | Enable GitHub commit links |
+| `--repo OWNER/NAME` | GitHub commit links (auto-detected if not specified) |
 | `--open` | Open `index.html` after generating |
 | `--gist` | Publish to GitHub Gist |
 | `--output-mode` | `merge` (update existing), `overwrite` (replace files), or `clean` (delete dir first) |
@@ -484,6 +484,15 @@ The generated transcript includes:
 - **Tool calls** — Bash commands, file edits, web searches, etc.
 - **Tool outputs** — Command output, diffs, API responses (syntax-highlighted)
 - **Thinking blocks** — AI reasoning (where available)
+
+### GitHub Commit Links
+
+Commits in transcripts can link to GitHub. The repo is auto-detected from:
+
+1. **Codex session metadata** — Git info recorded when the session started (v0.1.3+)
+2. **Git push output** — URLs like `github.com/owner/repo/pull/new/branch` in tool results
+
+If auto-detection fails, specify manually with `--repo owner/name`.
 
 For Codex sessions, we map:
 

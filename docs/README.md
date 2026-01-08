@@ -96,7 +96,7 @@ Each session creates:
 Long sessions are split into pages (5 conversations each) so they load quickly. The index page shows a timeline of all prompts with:
 
 - Tool call counts (Bash, Edit, Write, etc.)
-- Git commits (linked to GitHub)
+- Git commits (auto-linked to GitHub from session metadata)
 - Test pass/fail indicators
 
 ### Automatic Source Matching

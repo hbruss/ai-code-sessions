@@ -73,7 +73,7 @@ Simon's rendering engine produces clean, readable HTML:
 - **Tool results** are syntax-highlighted and collapsible
 - **File edits** display as side-by-side diffs
 - **Long content** truncates gracefully with expand buttons
-- **Git commits** auto-link to GitHub when detected
+- **Git commits** auto-link to GitHub (detected from session metadata or git push output)
 
 The index page shows a timeline of every prompt in the session, with statistics: which tools were called, how many commits were made, whether tests passed. All of this presentation logic comes from the original `claude-code-transcripts`.
 
