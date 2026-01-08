@@ -78,6 +78,9 @@ COMMIT_PATTERN = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)")
 # Regex to detect GitHub repo from git push output (e.g., github.com/owner/repo/pull/new/branch)
 GITHUB_REPO_PATTERN = re.compile(r"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/pull/new/")
 
+# Regex to detect GitHub repo from a git remote URL (SSH/HTTPS).
+GITHUB_REPO_URL_PATTERN = re.compile(r"github\.com[:/](?P<repo>[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)(?:\.git)?(?:$|[/?#])")
+
 PROMPTS_PER_PAGE = 5
 LONG_TEXT_THRESHOLD = 300  # Characters - text blocks longer than this are shown in index
 SEARCH_INDEX_TEXT_MAX_CHARS = 2000
@@ -692,6 +695,14 @@ def _parse_codex_rollout_jsonl(filepath: Path):
                     "originator": payload.get("originator"),
                     "cli_version": payload.get("cli_version"),
                 }
+                git_payload = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+                git_meta: dict[str, str] = {}
+                for key in ("commit_hash", "branch", "repository_url"):
+                    value = git_payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        git_meta[key] = value.strip()
+                if git_meta:
+                    meta["git"] = git_meta
                 continue
 
             if outer_type != "response_item":
@@ -3643,6 +3654,34 @@ def fetch_session(token, org_uuid, session_id):
     return response.json()
 
 
+def _github_repo_from_repository_url(repository_url: str) -> str | None:
+    if not isinstance(repository_url, str):
+        return None
+    url = repository_url.strip()
+    if not url:
+        return None
+    m = GITHUB_REPO_URL_PATTERN.search(url)
+    if m:
+        repo = m.group("repo")
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return repo
+    return None
+
+
+def _detect_github_repo_from_meta(meta: dict | None) -> str | None:
+    if not isinstance(meta, dict):
+        return None
+    git = meta.get("git")
+    if isinstance(git, dict):
+        repo_url = git.get("repository_url") or git.get("repositoryUrl") or git.get("repo_url") or git.get("repoUrl")
+    else:
+        repo_url = meta.get("repository_url")
+    if isinstance(repo_url, str):
+        return _github_repo_from_repository_url(repo_url)
+    return None
+
+
 def detect_github_repo(loglines):
     """
     Detect GitHub repo from git push output in tool results.
@@ -4406,7 +4445,7 @@ def generate_html(
 
     # Auto-detect GitHub repo if not provided
     if github_repo is None:
-        github_repo = detect_github_repo(loglines)
+        github_repo = _detect_github_repo_from_meta(data.get("meta")) or detect_github_repo(loglines)
         if github_repo:
             _LOGGER.info("Auto-detected GitHub repo: %s", github_repo)
         else:
@@ -4596,7 +4635,7 @@ def generate_html_from_session_data(
     transcript_title = f"{tool_display_name} transcript"
 
     if github_repo is None:
-        github_repo = detect_github_repo(loglines)
+        github_repo = _detect_github_repo_from_meta(session_data.get("meta")) or detect_github_repo(loglines)
         if github_repo:
             _LOGGER.info("Auto-detected GitHub repo: %s", github_repo)
         else:

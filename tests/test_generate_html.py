@@ -91,6 +91,65 @@ class TestGenerateHtml:
         repo = detect_github_repo(loglines)
         assert repo == "example/project"
 
+    def test_github_repo_autodetect_from_codex_rollout_meta(self, tmp_path):
+        """Test GitHub repo auto-detection from Codex session_meta.git.repository_url."""
+        jsonl_file = tmp_path / "rollout.jsonl"
+        jsonl_file.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2026-01-07T19:44:49.053Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": "019b99fd-8b2a-7cb2-90ac-dd3e50212be1",
+                                "timestamp": "2026-01-07T19:44:48.938Z",
+                                "cwd": "/project",
+                                "originator": "codex_cli_rs",
+                                "cli_version": "0.79.0",
+                                "git": {
+                                    "commit_hash": "8d9b01f82385ffbc8924d68c6a7d254502a9a0f7",
+                                    "branch": "main",
+                                    "repository_url": "git@github.com:example/project.git",
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-01-07T19:45:00.000Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "Create a commit"}],
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-01-07T19:45:10.000Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "Process exited with code 0\nOutput:\n[main abc1234] Add feature\n 1 file changed",
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        generate_html(jsonl_file, output_dir)
+
+        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+        assert "https://github.com/example/project/commit/abc1234" in index_html
+
     def test_handles_array_content_format(self, tmp_path):
         """Test that user messages with array content format are recognized.
 
