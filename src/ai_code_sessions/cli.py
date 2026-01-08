@@ -1884,6 +1884,151 @@ def changelog_since_cmd(ref, output_format, project_root, actor, tags, tool):
     click.echo(output)
 
 
+def _touched_files_is_empty(touched_files: object) -> bool:
+    if not isinstance(touched_files, dict):
+        return True
+    for key in ("created", "modified", "deleted", "moved"):
+        value = touched_files.get(key)
+        if isinstance(value, list) and value:
+            return False
+    return True
+
+
+@changelog_cli.command("refresh-metadata")
+@click.option(
+    "--project-root",
+    help="Target git repo root (defaults to git toplevel of CWD).",
+)
+@click.option(
+    "--actor",
+    help="Filter by actor. If not specified, refreshes all actors.",
+)
+@click.option(
+    "--only-empty/--all",
+    default=True,
+    show_default=True,
+    help="Only refresh metadata for entries with empty touched_files (default). "
+    "Use --all to recompute metadata for every entry.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be refreshed without writing any files.",
+)
+def changelog_refresh_metadata_cmd(project_root, actor, only_empty, dry_run):
+    """Recompute entry metadata (touched_files/tests/commits) from transcripts.
+
+    This command does not run the changelog evaluator (Codex/Claude); it only
+    rebuilds metadata derived from the session JSONL transcript.
+    """
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+
+    changelog_dir = root / ".changelog"
+    if not changelog_dir.exists():
+        click.echo("No .changelog directory found.", err=True)
+        return
+
+    actor_dirs: list[Path] = []
+    if actor:
+        specific_dir = changelog_dir / _slugify_actor(actor)
+        if specific_dir.exists():
+            actor_dirs.append(specific_dir)
+        else:
+            click.echo(f"No changelog directory for actor '{actor}'.", err=True)
+            return
+    else:
+        actor_dirs = [d for d in changelog_dir.iterdir() if d.is_dir()]
+
+    total_entries = 0
+    refreshed_entries = 0
+    skipped_entries = 0
+    failed_entries = 0
+    touched_changed = 0
+
+    for actor_dir in sorted(actor_dirs):
+        entries_path = actor_dir / "entries.jsonl"
+        if not entries_path.exists():
+            continue
+
+        raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        changed = False
+        actor_refreshed = 0
+        actor_failed = 0
+
+        for idx, raw_line in enumerate(raw_lines):
+            line = raw_line.strip()
+            if not line:
+                continue
+            total_entries += 1
+
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                skipped_entries += 1
+                continue
+
+            if only_empty and not _touched_files_is_empty(entry.get("touched_files")):
+                skipped_entries += 1
+                continue
+
+            transcript = entry.get("transcript", {})
+            source_jsonl = transcript.get("source_jsonl") if isinstance(transcript, dict) else None
+            if not isinstance(source_jsonl, str) or not source_jsonl.strip():
+                failed_entries += 1
+                actor_failed += 1
+                continue
+
+            source_path = Path(source_jsonl).expanduser()
+            if not source_path.exists():
+                failed_entries += 1
+                actor_failed += 1
+                continue
+
+            try:
+                digest = _build_changelog_digest(
+                    source_jsonl=source_path,
+                    start=entry.get("start"),
+                    end=entry.get("end"),
+                )
+            except Exception:
+                failed_entries += 1
+                actor_failed += 1
+                continue
+
+            delta = digest.get("delta") if isinstance(digest.get("delta"), dict) else {}
+            new_touched = delta.get("touched_files", {"created": [], "modified": [], "deleted": [], "moved": []})
+            new_tests = delta.get("tests", [])
+            new_commits = delta.get("commits", [])
+
+            if new_touched != entry.get("touched_files"):
+                touched_changed += 1
+
+            new_entry = {**entry, "touched_files": new_touched, "tests": new_tests, "commits": new_commits}
+            serialized = json.dumps(new_entry, ensure_ascii=False)
+            raw_lines[idx] = f"{serialized}\n" if raw_line.endswith("\n") else serialized
+            changed = True
+            refreshed_entries += 1
+            actor_refreshed += 1
+
+        if actor_refreshed and dry_run:
+            click.echo(f"[DRY RUN] {actor_dir.name}: would refresh {actor_refreshed} entr(y/ies)")
+
+        if changed and not dry_run:
+            backup_path = entries_path.with_suffix(".jsonl.bak")
+            shutil.copy2(entries_path, backup_path)
+            entries_path.write_text("".join(raw_lines), encoding="utf-8")
+            click.echo(
+                f"{actor_dir.name}: refreshed {actor_refreshed} entr(y/ies)"
+                + (f", {actor_failed} failed" if actor_failed else "")
+            )
+
+    click.echo()
+    click.echo(
+        f"Entries: {total_entries} total, {refreshed_entries} refreshed, {skipped_entries} skipped, {failed_entries} failed"
+    )
+    click.echo(f"touched_files changed: {touched_changed}")
+
+
 @changelog_cli.command("lint")
 @click.option(
     "--project-root",
@@ -2102,7 +2247,6 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                     source_jsonl=Path(source_jsonl),
                     start=original_entry.get("start"),
                     end=original_entry.get("end"),
-                    continuation_of_run_id=original_entry.get("continuation_of_run_id"),
                 )
 
                 # Run evaluator

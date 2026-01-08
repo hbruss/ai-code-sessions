@@ -1766,7 +1766,7 @@ def _extract_patch_text(tool_input) -> str | None:
         return tool_input
     if not isinstance(tool_input, dict):
         return None
-    for key in ("patch", "arguments"):
+    for key in ("patch", "arguments", "input"):
         val = tool_input.get(key)
         if isinstance(val, str) and val.strip():
             return val

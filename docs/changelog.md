@@ -380,6 +380,27 @@ ais changelog lint --fix --evaluator claude
 - Only entries with source transcripts still available can be fixed
 - If source files have been deleted, those entries cannot be re-evaluated
 
+### Refreshing Metadata (No Evaluator)
+
+Some fields like `touched_files`, `tests`, and `commits` are derived from the stored transcript JSONL. If metadata extraction improves in a newer `ais` version, you can recompute these fields for historical entries without spending evaluator usage:
+
+```bash
+# Preview changes
+ais changelog refresh-metadata --dry-run
+
+# Refresh a specific actor's entries
+ais changelog refresh-metadata --actor myusername
+
+# Force recompute for every entry (not just empty touched_files)
+ais changelog refresh-metadata --all
+```
+
+This command:
+
+- Does **not** call Codex or Claude (no evaluator tokens)
+- Creates a backup (`entries.jsonl.bak`) before modifying entries
+- Skips entries that don't have an on-disk transcript at `transcript.source_jsonl`
+
 ---
 
 ## Privacy Considerations

@@ -121,6 +121,56 @@ def test_parse_codex_rollout_jsonl(tmp_path):
     assert loglines[3]["message"]["content"][0]["type"] == "thinking"
 
 
+def test_build_changelog_digest_tracks_apply_patch_custom_tool_call_input(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "sess-1", "timestamp": "2026-01-01T00:00:00Z"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call",
+                            "status": "completed",
+                            "call_id": "call-apply-patch",
+                            "name": "apply_patch",
+                            "input": "\n".join(
+                                [
+                                    "*** Begin Patch",
+                                    "*** Update File: foo.txt",
+                                    "@@",
+                                    "-old",
+                                    "+new",
+                                    "*** End Patch",
+                                ]
+                            ),
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    digest = core._build_changelog_digest(
+        source_jsonl=path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:00:02+00:00",
+    )
+
+    touched = digest["delta"]["touched_files"]
+    assert touched["modified"] == ["foo.txt"]
+
+
 def test_find_best_source_file_invalid_timestamp():
     try:
         core.find_best_source_file(

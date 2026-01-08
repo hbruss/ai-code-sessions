@@ -565,6 +565,47 @@ ais changelog lint --fix --evaluator claude
 
 ---
 
+### `ais changelog refresh-metadata`
+
+Recompute entry metadata (`touched_files`, `tests`, `commits`) from the stored transcript JSONL without re-running the evaluator (Codex/Claude).
+
+This is useful when metadata extraction improves (for example, a parser update starts detecting `apply_patch` file touches that were previously missed) and you want to update historical entries without spending evaluator usage.
+
+**Usage:**
+
+```bash
+ais changelog refresh-metadata
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Git repo root (defaults to current repo) |
+| `--actor TEXT` | Filter by actor |
+| `--only-empty/--all` | Only refresh entries with empty `touched_files` (default) or all entries |
+| `--dry-run` | Preview what would be refreshed without writing |
+
+**Examples:**
+
+```bash
+# Preview what would change (recommended first)
+ais changelog refresh-metadata --dry-run
+
+# Refresh metadata for a single actor
+ais changelog refresh-metadata --actor myusername
+
+# Force recompute for every entry (not just empty touched_files)
+ais changelog refresh-metadata --all
+```
+
+**Notes:**
+
+- A backup (`entries.jsonl.bak`) is created before modifying entries
+- Entries without an on-disk transcript (`transcript.source_jsonl`) cannot be refreshed
+
+---
+
 ### Claude-Specific Commands (Inherited)
 
 These commands are inherited from Simon Willison's original `claude-code-transcripts` tool:

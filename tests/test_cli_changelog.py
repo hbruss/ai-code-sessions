@@ -142,3 +142,97 @@ def test_changelog_lint_fix_preserves_invalid_lines(monkeypatch, tmp_path):
     assert lines[1] == "{not json}"
     fixed = json.loads(lines[2])
     assert fixed["summary"] == "Fixed summary"
+
+
+def test_changelog_refresh_metadata_updates_touched_files_without_evaluator(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+
+    source_jsonl = tmp_path / "rollout.jsonl"
+    source_match_json = tmp_path / "source_match.json"
+    source_match_json.write_text("{}", encoding="utf-8")
+
+    source_jsonl.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "sess-1", "timestamp": "2026-01-01T00:00:00Z"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T00:00:01Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call",
+                            "status": "completed",
+                            "call_id": "call-apply-patch",
+                            "name": "apply_patch",
+                            "input": "\n".join(
+                                [
+                                    "*** Begin Patch",
+                                    "*** Update File: foo.txt",
+                                    "@@",
+                                    "-old",
+                                    "+new",
+                                    "*** End Patch",
+                                ]
+                            ),
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entry = {
+        "run_id": "run-1",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "tool": "codex",
+        "actor": "alice",
+        "project": "demo",
+        "project_root": str(tmp_path),
+        "label": "Test",
+        "start": "2026-01-01T00:00:00+00:00",
+        "end": "2026-01-01T00:00:02+00:00",
+        "session_dir": str(tmp_path / ".codex" / "sessions" / "2026-01-01-0000_Test"),
+        "continuation_of_run_id": None,
+        "transcript": {
+            "output_dir": str(tmp_path),
+            "index_html": str(tmp_path / "index.html"),
+            "source_jsonl": str(source_jsonl),
+            "source_match_json": str(source_match_json),
+        },
+        "summary": "test",
+        "bullets": ["did thing"],
+        "tags": [],
+        "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+        "tests": [],
+        "commits": [],
+        "notes": None,
+    }
+    entries_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "refresh-metadata",
+            "--project-root",
+            str(tmp_path),
+            "--actor",
+            "alice",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert entries_path.with_suffix(".jsonl.bak").exists()
+    refreshed = json.loads(entries_path.read_text(encoding="utf-8").strip())
+    assert refreshed["touched_files"]["modified"] == ["foo.txt"]

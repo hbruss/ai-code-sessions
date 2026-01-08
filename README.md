@@ -424,6 +424,25 @@ ais changelog lint --fix --dry-run           # Preview what would be fixed
 | `--evaluator` | Evaluator for `--fix`: `codex` (default) or `claude` |
 | `--dry-run` | Preview fixes without making changes |
 
+### `ais changelog refresh-metadata`
+
+Recompute entry metadata (`touched_files`, `tests`, `commits`) from stored transcripts without re-running the evaluator.
+
+This is useful if a parser bug was fixed (e.g., file touches weren’t detected correctly) and you want to update historical entries without spending evaluator tokens.
+
+```bash
+ais changelog refresh-metadata --project-root "$(git rev-parse --show-toplevel)" --dry-run
+ais changelog refresh-metadata --project-root "$(git rev-parse --show-toplevel)" --actor myusername
+ais changelog refresh-metadata --project-root "$(git rev-parse --show-toplevel)" --actor myusername --all
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-root` | Git repo root |
+| `--actor` | Filter by actor |
+| `--only-empty/--all` | Refresh only entries with empty `touched_files` (default) or all entries |
+| `--dry-run` | Preview changes without writing |
+
 ### Claude-Specific Commands (Inherited)
 
 These commands are inherited from Simon's original tool:
