@@ -4,6 +4,7 @@ import json
 import html
 import hashlib
 import itertools
+from dataclasses import dataclass
 import logging
 import os
 import platform
@@ -851,7 +852,7 @@ _CHANGELOG_ENTRY_SCHEMA = {
             "type": "array",
             "minItems": 1,
             "maxItems": 12,
-            "items": {"type": "string", "minLength": 1, "maxLength": 240},
+            "items": {"type": "string", "minLength": 1},
         },
         "tags": {
             "type": "array",
@@ -935,7 +936,7 @@ _CHANGELOG_CODEX_OUTPUT_SCHEMA = {
             "type": "array",
             "minItems": 1,
             "maxItems": 12,
-            "items": {"type": "string", "minLength": 1, "maxLength": 240},
+            "items": {"type": "string", "minLength": 1},
         },
         "tags": {
             "type": "array",
@@ -946,6 +947,119 @@ _CHANGELOG_CODEX_OUTPUT_SCHEMA = {
         "notes": {"type": ["string", "null"], "maxLength": 800},
     },
 }
+
+
+def _sanitize_changelog_text(text: str) -> str:
+    """Remove non-printable and unexpected Unicode from changelog text.
+
+    Keeps printable ASCII and common typographic characters.
+    Strips Devanagari, control chars, and other unexpected Unicode.
+    """
+    if not text:
+        return ""
+    # Keep printable ASCII + common typographic punctuation
+    return "".join(c for c in text if c.isprintable() and (ord(c) < 128 or c in "–—''…•·×÷±≤≥≠≈"))
+
+
+def _looks_truncated(text: str) -> bool:
+    """Check if text appears to be truncated mid-word or mid-sentence."""
+    if not text:
+        return False
+    text = text.strip()
+    if not text:
+        return False
+
+    # Valid sentence endings
+    if re.search(r"[.!?:;)\]`\"']$", text):
+        return False
+
+    # Common abbreviations that end with lowercase
+    if text.endswith(("etc", "ie", "eg", "vs", "al")):
+        return False
+
+    # Ends with lowercase letter (likely mid-word)
+    if re.search(r"[a-z]$", text):
+        return True
+
+    # Ends with incomplete syntax
+    if text.endswith(("/", "\\", "`", '"', "(", "[", "{", ",", "=")):
+        return True
+
+    return False
+
+
+# Unicode patterns that indicate garbage/corruption (e.g., Devanagari from ANSI issues)
+_UNICODE_GARBAGE_RE = re.compile(r"[\u0900-\u097F]")  # Devanagari range
+
+
+@dataclass
+class ValidationResult:
+    """Result of validating a changelog entry."""
+
+    valid: bool
+    warnings: list[str]
+    errors: list[str]
+
+
+def _validate_changelog_entry(entry: dict) -> ValidationResult:
+    """Validate a changelog entry for quality issues.
+
+    Checks for:
+    - Missing or empty required fields
+    - Truncated content (incomplete words/sentences)
+    - Unicode garbage
+    - Suspiciously short content
+    """
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    # Required fields
+    summary = entry.get("summary", "")
+    bullets = entry.get("bullets", [])
+
+    if not summary:
+        errors.append("Missing summary")
+    elif not summary.strip():
+        errors.append("Empty summary")
+
+    if not bullets:
+        errors.append("Missing bullets")
+    elif not isinstance(bullets, list):
+        errors.append(f"bullets is not a list (got {type(bullets).__name__})")
+
+    # Summary validation
+    if isinstance(summary, str) and summary.strip():
+        if _looks_truncated(summary):
+            warnings.append(f"summary may be truncated: ...{summary[-30:]!r}")
+        if _UNICODE_GARBAGE_RE.search(summary):
+            warnings.append("summary contains unexpected Unicode characters")
+        if len(summary.strip()) < 10:
+            warnings.append(f"summary suspiciously short ({len(summary.strip())} chars)")
+
+    # Bullet validation
+    if isinstance(bullets, list):
+        for i, bullet in enumerate(bullets):
+            if not isinstance(bullet, str):
+                errors.append(f"bullet[{i}] is not a string (got {type(bullet).__name__})")
+                continue
+            if not bullet.strip():
+                warnings.append(f"bullet[{i}] is empty")
+                continue
+            if _looks_truncated(bullet):
+                warnings.append(f"bullet[{i}] may be truncated: ...{bullet[-30:]!r}")
+            if _UNICODE_GARBAGE_RE.search(bullet):
+                warnings.append(f"bullet[{i}] contains unexpected Unicode")
+            if len(bullet.strip()) < 5:
+                warnings.append(f"bullet[{i}] suspiciously short ({len(bullet.strip())} chars)")
+            # Check for path-only content (likely incomplete)
+            if re.match(r"^[a-zA-Z0-9_/.-]+$", bullet.strip()) and "/" in bullet:
+                warnings.append(f"bullet[{i}] appears to be just a file path")
+
+    return ValidationResult(
+        valid=len(errors) == 0,
+        warnings=warnings,
+        errors=errors,
+    )
 
 
 def _now_iso8601() -> str:
@@ -1003,6 +1117,189 @@ def _load_existing_run_ids(entries_path: Path) -> set[str]:
     except OSError:
         return run_ids
     return run_ids
+
+
+def _parse_relative_date(ref: str) -> datetime | None:
+    """Parse relative date strings like '2 days ago', 'yesterday', 'last week'."""
+    ref_lower = ref.lower().strip()
+    now = datetime.now(timezone.utc)
+
+    if ref_lower == "yesterday":
+        return (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    if ref_lower == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Pattern: "N days/weeks/hours ago"
+    match = re.match(r"(\d+)\s+(day|week|hour|minute|month)s?\s+ago", ref_lower)
+    if match:
+        n = int(match.group(1))
+        unit = match.group(2)
+        if unit == "day":
+            return now - timedelta(days=n)
+        if unit == "week":
+            return now - timedelta(weeks=n)
+        if unit == "hour":
+            return now - timedelta(hours=n)
+        if unit == "minute":
+            return now - timedelta(minutes=n)
+        if unit == "month":
+            return now - timedelta(days=n * 30)  # Approximate
+
+    # Pattern: "last week/month"
+    if ref_lower == "last week":
+        return now - timedelta(weeks=1)
+    if ref_lower == "last month":
+        return now - timedelta(days=30)
+
+    return None
+
+
+def _git_commit_timestamp(ref: str, cwd: Path) -> datetime | None:
+    """Get the committer timestamp of a git commit."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI", ref],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return _parse_iso8601(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_changelog_since_ref(ref: str, project_root: Path) -> datetime:
+    """Resolve a date string or git ref to a datetime.
+
+    Accepts:
+    - ISO dates: 2026-01-06, 2026-01-06T10:30:00
+    - Relative: yesterday, today, "2 days ago", "last week"
+    - Git refs: abc1234, HEAD~5, main, v1.0.0
+    """
+    # Try ISO date first
+    dt = _parse_iso8601(ref)
+    if dt:
+        return dt
+
+    # Try date-only format (YYYY-MM-DD)
+    try:
+        dt = datetime.strptime(ref, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        pass
+
+    # Try relative date parsing
+    dt = _parse_relative_date(ref)
+    if dt:
+        return dt
+
+    # Try git commit
+    commit_ts = _git_commit_timestamp(ref, cwd=project_root)
+    if commit_ts:
+        return commit_ts
+
+    raise click.ClickException(f"Could not parse '{ref}' as date or git ref")
+
+
+def _load_changelog_entries(
+    entries_path: Path,
+    *,
+    since: datetime | None = None,
+    actor: str | None = None,
+    tool: str | None = None,
+    tags: list[str] | None = None,
+) -> list[dict]:
+    """Load and filter changelog entries from a JSONL file."""
+    entries = []
+    if not entries_path.exists():
+        return entries
+
+    try:
+        with open(entries_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Apply filters
+                if since:
+                    entry_dt = _parse_iso8601(entry.get("created_at") or entry.get("start"))
+                    if entry_dt and entry_dt < since:
+                        continue
+
+                if actor and entry.get("actor") != actor:
+                    continue
+
+                if tool and entry.get("tool") != tool:
+                    continue
+
+                if tags:
+                    entry_tags = set(entry.get("tags", []))
+                    if not entry_tags.intersection(tags):
+                        continue
+
+                entries.append(entry)
+    except OSError:
+        return entries
+
+    return sorted(entries, key=lambda e: e.get("created_at", ""), reverse=True)
+
+
+def _format_changelog_entries(entries: list[dict], output_format: str) -> str:
+    """Format changelog entries for display."""
+    if not entries:
+        return "No matching changelog entries found."
+
+    if output_format == "json":
+        return json.dumps(entries, indent=2, ensure_ascii=False)
+
+    if output_format == "summary":
+        lines = []
+        for e in entries:
+            ts = (e.get("start") or e.get("created_at") or "")[:10]
+            tool = e.get("tool", "?")
+            summary = e.get("summary", "(no summary)")
+            label = e.get("label")
+            prefix = f"{ts} [{tool}]"
+            if label:
+                prefix += f" {label}:"
+            lines.append(f"{prefix} {summary}")
+        return "\n".join(lines)
+
+    if output_format == "bullets":
+        lines = []
+        for e in entries:
+            ts = (e.get("start") or "")[:10]
+            label = e.get("label") or e.get("summary", "Untitled")
+            lines.append(f"\n## {ts}: {label}\n")
+            for bullet in e.get("bullets", []):
+                lines.append(f"- {bullet}")
+            tags = e.get("tags", [])
+            if tags:
+                lines.append(f"\nTags: {', '.join(tags)}")
+        return "\n".join(lines)
+
+    if output_format == "table":
+        # Markdown table format
+        lines = ["| Date | Tool | Summary |", "|------|------|---------|"]
+        for e in entries:
+            ts = (e.get("start") or e.get("created_at") or "")[:10]
+            tool = e.get("tool", "?")
+            summary = (e.get("summary") or "")[:60]
+            if len(e.get("summary", "")) > 60:
+                summary += "..."
+            lines.append(f"| {ts} | {tool} | {summary} |")
+        return "\n".join(lines)
+
+    # Default to summary
+    return _format_changelog_entries(entries, "summary")
 
 
 def _detect_actor(*, project_root: Path) -> str:
@@ -2360,6 +2657,10 @@ def _build_codex_changelog_prompt(*, digest: dict) -> str:
         "- Be concrete: mention what changed and why, and reference files by path when known.\n"
         "- Keep it concise.\n"
         "\n"
+        "IMPORTANT: Each bullet MUST be a complete sentence ending with proper punctuation (period, exclamation, etc.).\n"
+        "Never truncate mid-word or mid-sentence. If a bullet would be too long, split into multiple shorter bullets\n"
+        "or summarize more concisely. Incomplete bullets are worse than shorter, complete ones.\n"
+        "\n"
         "Return JSON matching the output schema.\n"
         "\n"
         "DIGEST_JSON_START\n"
@@ -2587,16 +2888,24 @@ def _generate_and_append_changelog_entry(
                 "source_jsonl": str(source_jsonl),
                 "source_match_json": str(source_match_json),
             },
-            "summary": summary.strip(),
-            "bullets": [str(b).strip() for b in bullets if str(b).strip()][:12],
+            "summary": _sanitize_changelog_text(summary.strip()),
+            "bullets": [_sanitize_changelog_text(str(b).strip()) for b in bullets if str(b).strip()][:12],
             "tags": [str(t).strip() for t in tags if str(t).strip()][:24],
             "touched_files": digest.get("delta", {}).get(
                 "touched_files", {"created": [], "modified": [], "deleted": [], "moved": []}
             ),
             "tests": digest.get("delta", {}).get("tests", []),
             "commits": digest.get("delta", {}).get("commits", []),
-            "notes": notes.strip() if isinstance(notes, str) and notes.strip() else None,
+            "notes": _sanitize_changelog_text(notes.strip()) if isinstance(notes, str) and notes.strip() else None,
         }
+
+        # Warn about potentially truncated bullets
+        for i, bullet in enumerate(entry["bullets"]):
+            if _looks_truncated(bullet):
+                click.echo(
+                    f"Warning: bullet[{i}] may be truncated: ...{bullet[-40:]!r}",
+                    err=True,
+                )
 
         _append_jsonl(entries_path, entry)
         return True, run_id, "appended"

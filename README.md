@@ -384,6 +384,46 @@ ais changelog backfill --evaluator claude --max-concurrency 5
 | `--model` | Model override for evaluator |
 | `--max-concurrency` | Max concurrent evaluations (Claude only, default: 5) |
 
+### `ais changelog since`
+
+Query changelog entries by date or git commit.
+
+```bash
+ais changelog since 2026-01-06              # Since a specific date
+ais changelog since yesterday               # Since yesterday
+ais changelog since "3 days ago"            # Relative date
+ais changelog since HEAD~5                  # Since a git commit
+ais changelog since main --format json      # Output as JSON
+ais changelog since yesterday --tool codex  # Filter by tool
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `summary`, `json`, `bullets`, `table` |
+| `--project-root` | Git repo root |
+| `--actor` | Filter by actor |
+| `--tool` | Filter by tool (`codex` or `claude`) |
+| `--tag` | Filter by tag (repeatable) |
+
+### `ais changelog lint`
+
+Validate existing changelog entries for quality issues.
+
+```bash
+ais changelog lint                           # Scan all entries
+ais changelog lint --actor myusername        # Filter by actor
+ais changelog lint --fix                     # Re-evaluate and fix issues
+ais changelog lint --fix --dry-run           # Preview what would be fixed
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-root` | Git repo root |
+| `--actor` | Filter by actor |
+| `--fix` | Re-evaluate entries with validation errors |
+| `--evaluator` | Evaluator for `--fix`: `codex` (default) or `claude` |
+| `--dry-run` | Preview fixes without making changes |
+
 ### Claude-Specific Commands (Inherited)
 
 These commands are inherited from Simon's original tool:

@@ -440,6 +440,131 @@ ais changelog backfill --limit 5 --max-concurrency 1
 
 ---
 
+### `ais changelog since`
+
+Query changelog entries since a specific date or git commit. Useful for reviewing recent work or generating reports.
+
+**Usage:**
+
+```bash
+ais changelog since <ref>
+```
+
+**REF can be:**
+
+- **ISO date**: `2026-01-06`, `2026-01-06T10:30:00`
+- **Relative**: `yesterday`, `today`, `"2 days ago"`, `"last week"`
+- **Git ref**: `abc1234`, `HEAD~5`, `main`, `v1.0.0`
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--format FORMAT` | Output format: `summary` (default), `json`, `bullets`, `table` |
+| `--project-root PATH` | Git repo root (defaults to current repo) |
+| `--actor TEXT` | Filter by actor |
+| `--tool TEXT` | Filter by tool (`codex` or `claude`) |
+| `--tag TEXT` | Filter by tag (repeatable) |
+
+**Examples:**
+
+```bash
+# Show entries since a specific date
+ais changelog since 2026-01-06
+
+# Show yesterday's entries
+ais changelog since yesterday
+
+# Show entries from the last 3 days
+ais changelog since "3 days ago"
+
+# Show entries since a git commit
+ais changelog since HEAD~5
+ais changelog since abc1234
+
+# Output as JSON for scripting
+ais changelog since yesterday --format json
+
+# Output as markdown table
+ais changelog since "last week" --format table
+
+# Filter by tool
+ais changelog since yesterday --tool codex
+
+# Filter by tag
+ais changelog since "2 days ago" --tag feat --tag fix
+```
+
+**Output Formats:**
+
+| Format | Description |
+|--------|-------------|
+| `summary` | One-line summaries (default) |
+| `json` | Full JSON entries |
+| `bullets` | Markdown with bullets and tags |
+| `table` | Markdown table |
+
+---
+
+### `ais changelog lint`
+
+Validate existing changelog entries for quality issues like truncation or Unicode garbage.
+
+**Usage:**
+
+```bash
+ais changelog lint
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-root PATH` | Git repo root (defaults to current repo) |
+| `--actor TEXT` | Filter by actor |
+| `--fix` | Re-evaluate entries with validation errors and replace them |
+| `--evaluator TEXT` | Evaluator to use for `--fix` mode: `codex` (default) or `claude` |
+| `--model TEXT` | Model override for the evaluator |
+| `-v, --verbose` | Show details for all entries, not just those with issues |
+| `--dry-run` | With `--fix`, show what would be fixed without making changes |
+
+**Examples:**
+
+```bash
+# Scan all entries for issues
+ais changelog lint
+
+# Scan entries for a specific actor
+ais changelog lint --actor myusername
+
+# Show all entries (including valid ones)
+ais changelog lint --verbose
+
+# Fix entries with issues using the default evaluator (codex)
+ais changelog lint --fix
+
+# Preview what would be fixed without making changes
+ais changelog lint --fix --dry-run
+
+# Fix using Claude as the evaluator
+ais changelog lint --fix --evaluator claude
+```
+
+**What it checks:**
+
+- **Truncated content**: Incomplete words/sentences (e.g., ending with lowercase letter)
+- **Unicode garbage**: Unexpected characters (e.g., Devanagari from ANSI issues)
+- **Empty or very short bullets**: Bullets with fewer than 5 characters
+- **Path-only bullets**: Bullets that appear to be just file paths
+
+**Notes:**
+
+- The `--fix` flag creates a backup (`entries.jsonl.bak`) before modifying entries
+- Only entries with source transcripts still available can be fixed
+- Re-evaluation uses the same digest-based approach as the original changelog generation
+
+---
+
 ### Claude-Specific Commands (Inherited)
 
 These commands are inherited from Simon Willison's original `claude-code-transcripts` tool:

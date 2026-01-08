@@ -237,6 +237,69 @@ This is useful for resumed sessions that span multiple work periods.
 
 ---
 
+## Querying Entries
+
+Use `ais changelog since` to query entries by date or git commit.
+
+### Basic Queries
+
+```bash
+# Entries since a specific date
+ais changelog since 2026-01-06
+
+# Entries since yesterday
+ais changelog since yesterday
+
+# Entries from the last 3 days
+ais changelog since "3 days ago"
+
+# Entries since a git commit
+ais changelog since HEAD~5
+ais changelog since abc1234
+```
+
+### Output Formats
+
+```bash
+# One-line summaries (default)
+ais changelog since yesterday
+
+# Full JSON for scripting
+ais changelog since yesterday --format json
+
+# Markdown with bullets and tags
+ais changelog since "last week" --format bullets
+
+# Markdown table
+ais changelog since yesterday --format table
+```
+
+### Filtering
+
+```bash
+# By tool
+ais changelog since yesterday --tool codex
+ais changelog since yesterday --tool claude
+
+# By tag (can repeat for OR)
+ais changelog since "2 days ago" --tag feat
+ais changelog since "2 days ago" --tag feat --tag fix
+
+# By actor
+ais changelog since yesterday --actor myusername
+```
+
+### Example Output
+
+```bash
+$ ais changelog since yesterday
+2026-01-07 [codex] Fix auth bug: Fixed authentication race condition by adding mutex lock
+2026-01-07 [codex] Add tests: Added unit tests for checkout flow
+2026-01-06 [claude] Refactor API: Restructured API handlers for better testability
+```
+
+---
+
 ## Handling Failures
 
 Changelog generation is **best-effort**—if it fails, the export still succeeds. Check for failures in:
@@ -267,6 +330,55 @@ tail -1 .changelog/*/failures.jsonl | jq '.error'
 # See stderr output (most actionable)
 tail -1 .changelog/*/failures.jsonl | jq '.stderr_tail'
 ```
+
+---
+
+## Validating and Fixing Entries
+
+Sometimes changelog entries may have quality issues like truncated content or Unicode garbage. Use `ais changelog lint` to identify and fix these problems.
+
+### Scanning for Issues
+
+```bash
+# Scan all entries
+ais changelog lint
+
+# Scan entries for a specific actor
+ais changelog lint --actor myusername
+
+# Show verbose output (including valid entries)
+ais changelog lint --verbose
+```
+
+### What Gets Flagged
+
+| Issue | Description |
+|-------|-------------|
+| Truncated content | Text ending mid-word or mid-sentence |
+| Unicode garbage | Unexpected characters (e.g., Devanagari from ANSI issues) |
+| Short bullets | Bullets with fewer than 5 characters |
+| Path-only bullets | Bullets that appear to be just file paths |
+
+### Fixing Issues
+
+The `--fix` flag re-evaluates problematic entries using the stored session data:
+
+```bash
+# Preview what would be fixed
+ais changelog lint --fix --dry-run
+
+# Fix using the default evaluator (codex)
+ais changelog lint --fix
+
+# Fix using Claude
+ais changelog lint --fix --evaluator claude
+```
+
+**Notes:**
+
+- A backup (`entries.jsonl.bak`) is created before modifying entries
+- Only entries with source transcripts still available can be fixed
+- If source files have been deleted, those entries cannot be re-evaluated
 
 ---
 

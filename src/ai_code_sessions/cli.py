@@ -24,6 +24,7 @@ from .core import (
     _append_jsonl,
     _append_log_line,
     _backfill_log_path,
+    _build_changelog_digest,
     _choose_copied_jsonl_for_session_dir,
     _claude_session_times,
     _codex_rollout_session_times,
@@ -34,9 +35,11 @@ from .core import (
     _ensure_gitignore_ignores,
     _env_first,
     _env_truthy,
+    _format_changelog_entries,
     _format_local_dt,
     _generate_and_append_changelog_entry,
     _git_toplevel,
+    _load_changelog_entries,
     _global_config_path,
     _legacy_ctx_metadata,
     _load_config,
@@ -46,7 +49,11 @@ from .core import (
     _read_last_jsonl_object,
     _render_config_toml,
     _repo_config_path,
+    _resolve_changelog_since_ref,
+    _run_codex_changelog_evaluator,
+    _sanitize_changelog_text,
     _slugify_actor,
+    _validate_changelog_entry,
     configure_logging,
     create_gist,
     fetch_session,
@@ -1776,6 +1783,374 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
         click.echo(f"Backfill halted: processed {processed} run(s).")
     else:
         click.echo(f"Backfill complete: processed {processed} run(s).")
+
+
+@changelog_cli.command("since")
+@click.argument("ref")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["summary", "json", "bullets", "table"]),
+    default="summary",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "--project-root",
+    help="Target git repo root (defaults to git toplevel of CWD).",
+)
+@click.option("--actor", help="Filter by actor.")
+@click.option(
+    "--tool",
+    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    help="Filter by tool.",
+)
+@click.option(
+    "--tag",
+    "tags",
+    multiple=True,
+    help="Filter by tag (can be repeated; entries matching any tag are included).",
+)
+def changelog_since_cmd(ref, output_format, project_root, actor, tags, tool):
+    """Show changelog entries since a date or git commit.
+
+    REF can be:
+
+    \b
+    - ISO date: 2026-01-06
+    - Relative: yesterday, today, "2 days ago", "last week"
+    - Git ref: abc1234, HEAD~5, main, v1.0.0
+
+    \b
+    Examples:
+      ais changelog since 2026-01-06
+      ais changelog since yesterday
+      ais changelog since "3 days ago"
+      ais changelog since HEAD~5
+      ais changelog since main --format json
+    """
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+
+    # Resolve the reference to a datetime
+    since_dt = _resolve_changelog_since_ref(ref, project_root=root)
+
+    # Find changelog entries
+    changelog_dir = root / ".changelog"
+    if not changelog_dir.exists():
+        click.echo("No .changelog directory found.", err=True)
+        return
+
+    # Collect entries from all actor directories
+    all_entries: list[dict] = []
+    for actor_dir in changelog_dir.iterdir():
+        if not actor_dir.is_dir():
+            continue
+        entries_path = actor_dir / "entries.jsonl"
+        if entries_path.exists():
+            entries = _load_changelog_entries(
+                entries_path,
+                since=since_dt,
+                actor=actor if actor else None,
+                tool=tool.lower() if tool else None,
+                tags=list(tags) if tags else None,
+            )
+            all_entries.extend(entries)
+
+    # Also check legacy entries.jsonl at changelog root
+    legacy_entries = changelog_dir / "entries.jsonl"
+    if legacy_entries.exists():
+        entries = _load_changelog_entries(
+            legacy_entries,
+            since=since_dt,
+            actor=actor if actor else None,
+            tool=tool.lower() if tool else None,
+            tags=list(tags) if tags else None,
+        )
+        all_entries.extend(entries)
+
+    # Sort by created_at descending and dedupe by run_id
+    seen_run_ids: set[str] = set()
+    unique_entries = []
+    for e in sorted(all_entries, key=lambda x: x.get("created_at", ""), reverse=True):
+        run_id = e.get("run_id")
+        if run_id and run_id in seen_run_ids:
+            continue
+        if run_id:
+            seen_run_ids.add(run_id)
+        unique_entries.append(e)
+
+    # Format and output
+    output = _format_changelog_entries(unique_entries, output_format)
+    click.echo(output)
+
+
+@changelog_cli.command("lint")
+@click.option(
+    "--project-root",
+    help="Target git repo root (defaults to git toplevel of CWD).",
+)
+@click.option(
+    "--actor",
+    help="Filter by actor. If not specified, lints all actors.",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Re-evaluate entries with validation errors and replace them.",
+)
+@click.option(
+    "--evaluator",
+    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    default="codex",
+    help="Evaluator to use for --fix mode (default: codex).",
+)
+@click.option(
+    "--model",
+    "evaluator_model",
+    help="Model override for the evaluator.",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show details for all entries, not just those with issues.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="With --fix, show what would be fixed without making changes.",
+)
+def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, verbose, dry_run):
+    """Validate changelog entries for quality issues.
+
+    Scans existing changelog entries for:
+
+    \b
+    - Truncated content (incomplete words/sentences)
+    - Unicode garbage (e.g., Devanagari from ANSI issues)
+    - Empty or very short bullets
+    - Path-only bullets (likely incomplete)
+
+    \b
+    Examples:
+      ais changelog lint
+      ais changelog lint --actor myusername
+      ais changelog lint --verbose
+      ais changelog lint --fix --evaluator codex
+      ais changelog lint --fix --dry-run
+    """
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+
+    changelog_dir = root / ".changelog"
+    if not changelog_dir.exists():
+        click.echo("No .changelog directory found.", err=True)
+        return
+
+    # Collect all actor directories (or filter by specific actor)
+    actor_dirs: list[Path] = []
+    if actor:
+        specific_dir = changelog_dir / _slugify_actor(actor)
+        if specific_dir.exists():
+            actor_dirs.append(specific_dir)
+        else:
+            click.echo(f"No changelog directory for actor '{actor}'.", err=True)
+            return
+    else:
+        actor_dirs = [d for d in changelog_dir.iterdir() if d.is_dir()]
+
+    total_entries = 0
+    entries_with_issues = 0
+    # (actor, line, label, warnings, errors, entry_dict)
+    all_issues: list[tuple[str, int, str, list[str], list[str], dict | None]] = []
+
+    for actor_dir in sorted(actor_dirs):
+        entries_path = actor_dir / "entries.jsonl"
+        if not entries_path.exists():
+            continue
+
+        actor_name = actor_dir.name
+        with open(entries_path, encoding="utf-8") as f:
+            for line_num, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                total_entries += 1
+
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError as e:
+                    all_issues.append((actor_name, line_num, "(parse error)", [], [f"Invalid JSON: {e}"], None))
+                    entries_with_issues += 1
+                    continue
+
+                label = entry.get("label", entry.get("summary", "(untitled)")[:40])
+                validation = _validate_changelog_entry(entry)
+
+                if validation.warnings or validation.errors:
+                    entries_with_issues += 1
+                    all_issues.append((actor_name, line_num, label, validation.warnings, validation.errors, entry))
+                elif verbose:
+                    click.echo(f"  ✓ {actor_name}:{line_num} — {label}")
+
+    # Output results
+    if not all_issues:
+        click.echo(click.style(f"✓ All {total_entries} entries valid!", fg="green"))
+        return
+
+    click.echo(f"\nFound issues in {entries_with_issues}/{total_entries} entries:\n")
+
+    for actor_name, line_num, label, warnings, errors, _ in all_issues:
+        click.echo(click.style(f"[{actor_name}:{line_num}] {label}", bold=True))
+        for err in errors:
+            click.echo(click.style(f"  ✗ {err}", fg="red"))
+        for warn in warnings:
+            click.echo(click.style(f"  ⚠ {warn}", fg="yellow"))
+        click.echo()
+
+    if not fix:
+        click.echo(click.style("Use --fix to re-evaluate entries with issues.", fg="cyan"))
+        return
+
+    # --fix mode: Re-evaluate entries with issues
+    fixable_entries = [(a, ln, lbl, w, e, entry) for a, ln, lbl, w, e, entry in all_issues if entry is not None]
+    if not fixable_entries:
+        click.echo(click.style("No fixable entries (all issues are parse errors).", fg="yellow"))
+        return
+
+    click.echo(
+        click.style(
+            f"\n{'[DRY RUN] ' if dry_run else ''}Attempting to fix {len(fixable_entries)} entries...\n", bold=True
+        )
+    )
+
+    # Group by actor for processing
+    by_actor: dict[str, list[tuple[int, dict]]] = {}
+    for actor_name, line_num, _, _, _, entry in fixable_entries:
+        if actor_name not in by_actor:
+            by_actor[actor_name] = []
+        by_actor[actor_name].append((line_num, entry))
+
+    fixed_count = 0
+    failed_count = 0
+
+    for actor_name, entries_to_fix in by_actor.items():
+        entries_path = changelog_dir / actor_name / "entries.jsonl"
+        if not entries_path.exists():
+            continue
+
+        # Read all entries
+        all_entries: list[dict] = []
+        with open(entries_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        all_entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass  # Skip invalid entries
+
+        # Build line number -> entry index mapping
+        line_to_idx = {ln: ln - 1 for ln, _ in entries_to_fix}
+
+        # Process each entry to fix
+        for line_num, original_entry in entries_to_fix:
+            idx = line_to_idx.get(line_num)
+            if idx is None or idx >= len(all_entries):
+                click.echo(click.style(f"  ✗ Could not locate entry at line {line_num}", fg="red"))
+                failed_count += 1
+                continue
+
+            # Check if source transcript exists
+            transcript = original_entry.get("transcript", {})
+            source_jsonl = transcript.get("source_jsonl")
+
+            if not source_jsonl or not Path(source_jsonl).exists():
+                click.echo(
+                    click.style(f"  ✗ [{actor_name}:{line_num}] Source transcript not found: {source_jsonl}", fg="red")
+                )
+                failed_count += 1
+                continue
+
+            label = original_entry.get("label", "(untitled)")
+            click.echo(f"  {'[DRY RUN] ' if dry_run else ''}Re-evaluating: {label}")
+
+            if dry_run:
+                fixed_count += 1
+                continue
+
+            # Re-evaluate the entry
+            try:
+                # Build digest from session
+                digest = _build_changelog_digest(
+                    source_jsonl=Path(source_jsonl),
+                    start=original_entry.get("start"),
+                    end=original_entry.get("end"),
+                    continuation_of_run_id=original_entry.get("continuation_of_run_id"),
+                )
+
+                # Run evaluator
+                eval_result = _run_codex_changelog_evaluator(
+                    digest=digest,
+                    project_root=Path(original_entry.get("project_root", root)),
+                    evaluator=evaluator.lower(),
+                    evaluator_model=evaluator_model,
+                    claude_max_thinking_tokens=8192 if evaluator.lower() == "claude" else None,
+                )
+
+                # Extract and sanitize results
+                new_summary = _sanitize_changelog_text(eval_result.get("summary", "").strip())
+                new_bullets = [
+                    _sanitize_changelog_text(str(b).strip()) for b in eval_result.get("bullets", []) if str(b).strip()
+                ][:12]
+                new_tags = [str(t).strip().lower() for t in eval_result.get("tags", []) if str(t).strip()][:24]
+
+                # Validate new entry
+                new_entry = {**original_entry}
+                new_entry["summary"] = new_summary
+                new_entry["bullets"] = new_bullets
+                new_entry["tags"] = new_tags
+                new_entry["notes"] = eval_result.get("notes")
+
+                new_validation = _validate_changelog_entry(new_entry)
+                if new_validation.errors:
+                    click.echo(click.style(f"    ✗ Re-evaluation still has errors: {new_validation.errors}", fg="red"))
+                    failed_count += 1
+                    continue
+
+                if new_validation.warnings:
+                    click.echo(click.style(f"    ⚠ Re-evaluation has warnings: {new_validation.warnings}", fg="yellow"))
+
+                # Update the entry in our list
+                all_entries[idx] = new_entry
+                fixed_count += 1
+                click.echo(click.style("    ✓ Fixed", fg="green"))
+
+            except Exception as e:
+                click.echo(click.style(f"    ✗ Re-evaluation failed: {e}", fg="red"))
+                failed_count += 1
+                continue
+
+        # Write back all entries (with backup)
+        if not dry_run and fixed_count > 0:
+            # Create backup
+            backup_path = entries_path.with_suffix(".jsonl.bak")
+            shutil.copy2(entries_path, backup_path)
+            click.echo(f"  Backup created: {backup_path}")
+
+            # Write new entries
+            with open(entries_path, "w", encoding="utf-8") as f:
+                for entry in all_entries:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    click.echo()
+    if dry_run:
+        click.echo(click.style(f"[DRY RUN] Would fix {fixed_count} entries.", fg="cyan"))
+    else:
+        click.echo(
+            click.style(
+                f"Fixed {fixed_count} entries, {failed_count} failed.", fg="green" if failed_count == 0 else "yellow"
+            )
+        )
 
 
 @cli.command("web")
