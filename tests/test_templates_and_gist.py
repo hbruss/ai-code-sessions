@@ -1,7 +1,6 @@
 """Tests for template rendering variants and gist helpers."""
 
 import subprocess
-from pathlib import Path
 
 import click
 

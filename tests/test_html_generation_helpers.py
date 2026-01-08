@@ -1,7 +1,5 @@
 """Tests for HTML generation helpers and output management."""
 
-from pathlib import Path
-
 from ai_code_transcripts import (
     generate_html,
     generate_html_from_session_data,

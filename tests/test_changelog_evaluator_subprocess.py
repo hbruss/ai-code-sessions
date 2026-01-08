@@ -51,7 +51,7 @@ def test_codex_evaluator_markdown_json_falls_back_to_error(monkeypatch, tmp_path
     def fake_run(cmd, **_kwargs):
         out_path = Path(cmd[cmd.index("--output-last-message") + 1])
         # This matches the current salvage regex which expects escaped braces.
-        out_path.write_text("\\{\"summary\": \"ok\"\\}", encoding="utf-8")
+        out_path.write_text('\\{"summary": "ok"\\}', encoding="utf-8")
         return _Proc(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(core.shutil, "which", fake_which)
@@ -121,7 +121,7 @@ def test_claude_evaluator_result_json_fallback(monkeypatch):
         return "/usr/bin/claude"
 
     def fake_run(*_args, **_kwargs):
-        payload = {"result": "```json\n{\"summary\": \"ok\"}\n```", "is_error": False}
+        payload = {"result": '```json\n{"summary": "ok"}\n```', "is_error": False}
         return _Proc(returncode=0, stdout=json.dumps(payload), stderr="")
 
     monkeypatch.setattr(core.shutil, "which", fake_which)

@@ -2054,13 +2054,9 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
             try:
                 claude_tokens = int(raw_tokens)
             except ValueError:
-                raise click.ClickException(
-                    "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)"
-                )
+                raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)")
             if claude_tokens <= 0:
-                raise click.ClickException(
-                    "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer"
-                )
+                raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
 
     for actor_name, entries_to_fix in by_actor.items():
         entries_path = changelog_dir / actor_name / "entries.jsonl"

@@ -1,7 +1,6 @@
 """Tests for CLI setup/web/backfill/export-latest flows."""
 
 import json
-from pathlib import Path
 
 import click
 from click.testing import CliRunner

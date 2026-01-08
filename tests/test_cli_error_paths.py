@@ -1,7 +1,5 @@
 """Tests for CLI error paths and guardrails."""
 
-from pathlib import Path
-
 import httpx
 from click.testing import CliRunner
 

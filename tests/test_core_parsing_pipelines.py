@@ -1,7 +1,6 @@
 """Tests for core parsing pipelines and legacy metadata."""
 
 import json
-from pathlib import Path
 
 import click
 
@@ -81,7 +80,7 @@ def test_parse_codex_rollout_jsonl(tmp_path):
                             "type": "function_call",
                             "name": "Bash",
                             "call_id": "call-1",
-                            "arguments": "{\"command\": \"ls\"}",
+                            "arguments": '{"command": "ls"}',
                         },
                     }
                 ),

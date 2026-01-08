@@ -957,11 +957,7 @@ def _sanitize_changelog_text(text: str) -> str:
     """
     if not text:
         return ""
-    return "".join(
-        c
-        for c in text
-        if c.isprintable() and not _UNICODE_GARBAGE_RE.search(c)
-    )
+    return "".join(c for c in text if c.isprintable() and not _UNICODE_GARBAGE_RE.search(c))
 
 
 def _looks_truncated(text: str) -> bool:
