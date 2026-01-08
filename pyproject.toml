@@ -38,6 +38,7 @@ dev = [
     "pytest-httpx>=0.35.0",
     "syrupy>=5.0.0",
     "ruff",
+    "pytest-cov>=7.0.0",
 ]
 
 [tool.pytest.ini_options]

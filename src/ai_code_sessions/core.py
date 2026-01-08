@@ -119,7 +119,7 @@ def prepare_output_dir(*, output_dir: Path, mode: str, project_root: Path | None
 def prune_stale_pages(*, output_dir: Path, total_pages: int) -> None:
     if total_pages <= 0:
         return
-    pattern = re.compile(r"page-(\d+)\\.html$")
+    pattern = re.compile(r"page-(\d+)\.html$")
     for path in output_dir.glob("page-*.html"):
         match = pattern.match(path.name)
         if not match:
@@ -950,15 +950,18 @@ _CHANGELOG_CODEX_OUTPUT_SCHEMA = {
 
 
 def _sanitize_changelog_text(text: str) -> str:
-    """Remove non-printable and unexpected Unicode from changelog text.
+    """Remove non-printable characters and known garbage ranges.
 
-    Keeps printable ASCII and common typographic characters.
-    Strips Devanagari, control chars, and other unexpected Unicode.
+    Preserves Unicode (including emoji and non-English text) while filtering
+    control characters and known corruption ranges.
     """
     if not text:
         return ""
-    # Keep printable ASCII + common typographic punctuation
-    return "".join(c for c in text if c.isprintable() and (ord(c) < 128 or c in "–—''…•·×÷±≤≥≠≈"))
+    return "".join(
+        c
+        for c in text
+        if c.isprintable() and not _UNICODE_GARBAGE_RE.search(c)
+    )
 
 
 def _looks_truncated(text: str) -> bool:

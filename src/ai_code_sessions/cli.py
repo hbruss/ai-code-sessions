@@ -1983,7 +1983,14 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                     entries_with_issues += 1
                     continue
 
-                label = entry.get("label", entry.get("summary", "(untitled)")[:40])
+                summary = entry.get("summary")
+                if isinstance(summary, str):
+                    summary_text = summary
+                elif summary is None:
+                    summary_text = "(untitled)"
+                else:
+                    summary_text = str(summary)
+                label = entry.get("label") or summary_text[:40]
                 validation = _validate_changelog_entry(entry)
 
                 if validation.warnings or validation.errors:
@@ -2032,33 +2039,46 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
 
     fixed_count = 0
     failed_count = 0
+    cfg = _load_config(project_root=root)
+    claude_tokens = None
+    if fix and evaluator.lower() == "claude":
+        raw_tokens = _env_first(
+            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS",
+            "AI_CODE_SESSIONS_CHANGELOG_CLAUDE_THINKING_TOKENS",
+        )
+        if not raw_tokens:
+            cfg_tokens = _config_get(cfg, "changelog.claude_thinking_tokens")
+            if isinstance(cfg_tokens, int):
+                raw_tokens = str(cfg_tokens)
+        if raw_tokens:
+            try:
+                claude_tokens = int(raw_tokens)
+            except ValueError:
+                raise click.ClickException(
+                    "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)"
+                )
+            if claude_tokens <= 0:
+                raise click.ClickException(
+                    "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer"
+                )
 
     for actor_name, entries_to_fix in by_actor.items():
         entries_path = changelog_dir / actor_name / "entries.jsonl"
         if not entries_path.exists():
             continue
 
-        # Read all entries
-        all_entries: list[dict] = []
-        with open(entries_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        all_entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass  # Skip invalid entries
-
-        # Build line number -> entry index mapping
-        line_to_idx = {ln: ln - 1 for ln, _ in entries_to_fix}
+        raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        actor_fixed = 0
 
         # Process each entry to fix
         for line_num, original_entry in entries_to_fix:
-            idx = line_to_idx.get(line_num)
-            if idx is None or idx >= len(all_entries):
+            idx = line_num - 1
+            if idx < 0 or idx >= len(raw_lines):
                 click.echo(click.style(f"  ✗ Could not locate entry at line {line_num}", fg="red"))
                 failed_count += 1
                 continue
+            raw_line = raw_lines[idx]
+            keep_newline = raw_line.endswith("\n")
 
             # Check if source transcript exists
             transcript = original_entry.get("transcript", {})
@@ -2076,6 +2096,7 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
 
             if dry_run:
                 fixed_count += 1
+                actor_fixed += 1
                 continue
 
             # Re-evaluate the entry
@@ -2094,7 +2115,7 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                     project_root=Path(original_entry.get("project_root", root)),
                     evaluator=evaluator.lower(),
                     evaluator_model=evaluator_model,
-                    claude_max_thinking_tokens=8192 if evaluator.lower() == "claude" else None,
+                    claude_max_thinking_tokens=claude_tokens if evaluator.lower() == "claude" else None,
                 )
 
                 # Extract and sanitize results
@@ -2103,13 +2124,19 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                     _sanitize_changelog_text(str(b).strip()) for b in eval_result.get("bullets", []) if str(b).strip()
                 ][:12]
                 new_tags = [str(t).strip().lower() for t in eval_result.get("tags", []) if str(t).strip()][:24]
+                raw_notes = eval_result.get("notes")
+                new_notes = (
+                    _sanitize_changelog_text(raw_notes.strip())
+                    if isinstance(raw_notes, str) and raw_notes.strip()
+                    else None
+                )
 
                 # Validate new entry
                 new_entry = {**original_entry}
                 new_entry["summary"] = new_summary
                 new_entry["bullets"] = new_bullets
                 new_entry["tags"] = new_tags
-                new_entry["notes"] = eval_result.get("notes")
+                new_entry["notes"] = new_notes
 
                 new_validation = _validate_changelog_entry(new_entry)
                 if new_validation.errors:
@@ -2120,9 +2147,11 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                 if new_validation.warnings:
                     click.echo(click.style(f"    ⚠ Re-evaluation has warnings: {new_validation.warnings}", fg="yellow"))
 
-                # Update the entry in our list
-                all_entries[idx] = new_entry
+                # Update the raw line in place, preserving the newline if present
+                serialized = json.dumps(new_entry, ensure_ascii=False)
+                raw_lines[idx] = f"{serialized}\n" if keep_newline else serialized
                 fixed_count += 1
+                actor_fixed += 1
                 click.echo(click.style("    ✓ Fixed", fg="green"))
 
             except Exception as e:
@@ -2131,16 +2160,14 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
                 continue
 
         # Write back all entries (with backup)
-        if not dry_run and fixed_count > 0:
+        if not dry_run and actor_fixed > 0:
             # Create backup
             backup_path = entries_path.with_suffix(".jsonl.bak")
             shutil.copy2(entries_path, backup_path)
             click.echo(f"  Backup created: {backup_path}")
 
-            # Write new entries
-            with open(entries_path, "w", encoding="utf-8") as f:
-                for entry in all_entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # Write new lines, preserving invalid/blank lines
+            entries_path.write_text("".join(raw_lines), encoding="utf-8")
 
     click.echo()
     if dry_run:

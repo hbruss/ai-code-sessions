@@ -96,6 +96,12 @@ uv run --group dev pytest --snapshot-update
 
 **Important:** Only update snapshots when you've intentionally changed the HTML output. Review the diff carefully.
 
+### Coverage
+
+```bash
+uv run --group dev pytest --cov=src/ai_code_sessions --cov-report=term-missing
+```
+
 ---
 
 ## Code Style

@@ -103,6 +103,12 @@ class TestSanitizeChangelogText:
         assert "≥" in _sanitize_changelog_text(text)
         assert "≤" in _sanitize_changelog_text(text)
 
+    def test_preserves_non_english_and_emoji(self):
+        text = "Added 日本語 🚀 support"
+        sanitized = _sanitize_changelog_text(text)
+        assert "日本語" in sanitized
+        assert "🚀" in sanitized
+
     def test_empty_string(self):
         assert _sanitize_changelog_text("") == ""
 
