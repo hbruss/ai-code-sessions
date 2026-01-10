@@ -32,6 +32,8 @@ htmlcov/
 .logs/
 .tmp/
 .archive/
+docs/local-dev-guide.md
+docs/pypi.md
 
 # Editors
 .vscode/
