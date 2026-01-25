@@ -360,6 +360,45 @@ class TestRenderContentBlock:
         finally:
             ai_code_transcripts._github_repo = old_repo
 
+    def test_tool_result_block_with_image_list_is_not_truncated(self):
+        """Tool results that include images should render images and avoid truncation."""
+        import base64
+
+        gif_data = (
+            b"GIF89a"
+            b"\xc8\x00\xc8\x00"
+            b"\x80"
+            b"\x00"
+            b"\x00"
+            b"\x00\x00\x00"
+            b"\x00\x00\x00"
+            b","
+            b"\x00\x00\x00\x00"
+            b"\xc8\x00\xc8\x00"
+            b"\x00"
+            b"\x08"
+            b"\x02\x04\x01\x00"
+            b";"
+        )
+        black_gif_base64 = base64.b64encode(gif_data).decode("ascii")
+
+        block = {
+            "type": "tool_result",
+            "content": [
+                {"type": "text", "text": "Here is an image:"},
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/gif", "data": black_gif_base64},
+                },
+            ],
+            "is_error": False,
+        }
+
+        result = render_content_block(block)
+        assert 'src="data:image/gif;base64,' in result
+        assert "expand-btn" not in result
+        assert "truncatable" not in result
+
 
 class TestAnalyzeConversation:
     """Tests for conversation analysis."""

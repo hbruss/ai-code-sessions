@@ -107,6 +107,120 @@ def test_web_happy_path_writes_json(monkeypatch, tmp_path):
     assert (output_dir / "sess-1.json").exists()
 
 
+def test_web_interactive_repo_filtering(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_module, "resolve_credentials", lambda *_: ("tok", "org"))
+
+    sessions_data = {
+        "data": [
+            {
+                "id": "sess-1",
+                "title": "Session 1",
+                "created_at": "2025-01-01T10:00:00.000Z",
+                "session_context": {
+                    "outcomes": [
+                        {"type": "git_repository", "git_info": {"repo": "acme/widgets", "type": "github"}},
+                    ]
+                },
+            },
+            {
+                "id": "sess-2",
+                "title": "Session 2",
+                "created_at": "2025-01-02T10:00:00.000Z",
+                "session_context": {
+                    "outcomes": [
+                        {"type": "git_repository", "git_info": {"repo": "other/repo", "type": "github"}},
+                    ]
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(cli_module, "fetch_sessions", lambda *_: sessions_data)
+
+    session_data = {
+        "loglines": [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "message": {"role": "user", "content": "Hello"}}
+        ]
+    }
+    monkeypatch.setattr(cli_module, "fetch_session", lambda *_: session_data)
+
+    def fake_generate(_session, output, **_kwargs):
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    monkeypatch.setattr(cli_module, "generate_html_from_session_data", fake_generate)
+
+    captured = {}
+
+    class MockSelect:
+        def __init__(self, *_args, **kwargs):
+            captured["choices"] = kwargs.get("choices") or []
+
+        def ask(self):
+            return "sess-1"
+
+    monkeypatch.setattr(cli_module.questionary, "select", MockSelect)
+
+    output_dir = tmp_path / "out"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "web",
+            "--repo",
+            "acme/widgets",
+            "--token",
+            "tok",
+            "--org-uuid",
+            "org",
+            "--output",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (output_dir / "index.html").exists()
+    assert len(captured["choices"]) == 1
+
+
+def test_web_interactive_repo_filtering_no_matches(monkeypatch):
+    monkeypatch.setattr(cli_module, "resolve_credentials", lambda *_: ("tok", "org"))
+    monkeypatch.setattr(
+        cli_module,
+        "fetch_sessions",
+        lambda *_: {
+            "data": [
+                {
+                    "id": "sess-1",
+                    "title": "Session 1",
+                    "created_at": "2025-01-01T10:00:00.000Z",
+                    "session_context": {
+                        "outcomes": [
+                            {"type": "git_repository", "git_info": {"repo": "other/repo", "type": "github"}},
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "web",
+            "--repo",
+            "acme/widgets",
+            "--token",
+            "tok",
+            "--org-uuid",
+            "org",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "No sessions found for repo" in result.output
+
+
 def test_backfill_sequential_appends(monkeypatch, tmp_path):
     session_dir = tmp_path / ".codex" / "sessions" / "2026-01-01-0000_test"
     session_dir.mkdir(parents=True)

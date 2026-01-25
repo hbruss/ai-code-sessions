@@ -62,7 +62,9 @@ from .core import (
     find_all_sessions,
     find_best_source_file,
     find_local_sessions,
+    filter_sessions_by_repo,
     format_session_for_display,
+    enrich_sessions_with_repos,
     generate_batch_html,
     generate_html,
     generate_html_from_session_data,
@@ -2386,13 +2388,26 @@ def web_cmd(
         except httpx.RequestError as e:
             raise click.ClickException(f"Request failed: {e}")
 
-        if not sessions_data:
+        sessions = []
+        if isinstance(sessions_data, dict):
+            sessions = sessions_data.get("data", [])
+        elif isinstance(sessions_data, list):
+            sessions = sessions_data
+
+        if not sessions:
             click.echo("No sessions found.")
             return
 
+        sessions = enrich_sessions_with_repos(sessions)
+
+        if repo:
+            sessions = filter_sessions_by_repo(sessions, repo)
+            if not sessions:
+                raise click.ClickException(f"No sessions found for repo: {repo}")
+
         # Build choices for questionary
         choices = []
-        for sess in sessions_data:
+        for sess in sessions:
             display = format_session_for_display(sess)
             sid = sess.get("id")
             if sid:

@@ -3915,13 +3915,18 @@ def resolve_credentials(token, org_uuid):
 
 
 def format_session_for_display(session_data):
-    """Format a session for display in the list or picker."""
-    session_id = session_data.get("id", "unknown")
+    """Format a session for display in the list or picker.
+
+    Shows repo first (if available), then date, then title.
+    """
     title = session_data.get("title", "Untitled")
     created_at = session_data.get("created_at", "")
-    if len(title) > 60:
-        title = title[:57] + "..."
-    return f"{session_id}  {created_at[:19] if created_at else 'N/A':19}  {title}"
+    repo = session_data.get("repo")
+    if len(title) > 50:
+        title = title[:47] + "..."
+    repo_display = repo if repo else "(no repo)"
+    date_display = created_at[:19] if created_at else "N/A"
+    return f"{repo_display:30}  {date_display:19}  {title}"
 
 
 def get_api_headers(token, org_uuid):
@@ -4014,6 +4019,66 @@ def detect_github_repo(loglines):
                     if match:
                         return match.group(1)
     return None
+
+
+def extract_repo_from_session(session: dict) -> str | None:
+    """Extract GitHub repo from Claude API session metadata.
+
+    Looks in session_context.outcomes for git_info.repo, then falls back to parsing
+    a repo from session_context.sources git_repository URLs.
+    """
+    if not isinstance(session, dict):
+        return None
+
+    context = session.get("session_context", {})
+    if not isinstance(context, dict):
+        return None
+
+    outcomes = context.get("outcomes", [])
+    if isinstance(outcomes, list):
+        for outcome in outcomes:
+            if not isinstance(outcome, dict):
+                continue
+            if outcome.get("type") != "git_repository":
+                continue
+            git_info = outcome.get("git_info", {})
+            if isinstance(git_info, dict):
+                repo = git_info.get("repo")
+                if isinstance(repo, str) and repo.strip():
+                    return repo.strip()
+
+    sources = context.get("sources", [])
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            if source.get("type") != "git_repository":
+                continue
+            url = source.get("url", "")
+            if isinstance(url, str):
+                repo = _github_repo_from_repository_url(url)
+                if repo:
+                    return repo
+
+    return None
+
+
+def enrich_sessions_with_repos(sessions, token=None, org_uuid=None, fetch_fn=None):
+    """Enrich Claude API sessions list with a best-effort 'repo' key."""
+    _ = (token, org_uuid, fetch_fn)
+    enriched = []
+    for session in sessions:
+        session_copy = dict(session)
+        session_copy["repo"] = extract_repo_from_session(session)
+        enriched.append(session_copy)
+    return enriched
+
+
+def filter_sessions_by_repo(sessions, repo: str | None):
+    """Filter sessions by repo (owner/name)."""
+    if repo is None:
+        return sessions
+    return [s for s in sessions if s.get("repo") == repo]
 
 
 def format_json(obj):
@@ -4131,7 +4196,30 @@ def render_content_block(block):
                 content_html = "".join(parts)
             else:
                 content_html = f"<pre>{html.escape(content)}</pre>"
-        elif isinstance(content, list) or is_json_like(content):
+        elif isinstance(content, list):
+            parts = []
+            has_images = False
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type", "")
+                    if item_type == "text":
+                        text = item.get("text", "")
+                        if text:
+                            parts.append(f"<pre>{html.escape(text)}</pre>")
+                    elif item_type == "image":
+                        source = item.get("source", {})
+                        media_type = source.get("media_type", "image/png")
+                        data = source.get("data", "")
+                        if data:
+                            parts.append(_macros.image_block(media_type, data))
+                            has_images = True
+                    else:
+                        parts.append(format_json(item))
+                else:
+                    parts.append(f"<pre>{html.escape(str(item))}</pre>")
+            content_html = "".join(parts) if parts else format_json(content)
+            return _macros.tool_result(content_html, is_error, has_images)
+        elif is_json_like(content):
             content_html = format_json(content)
         else:
             content_html = format_json(content)

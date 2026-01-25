@@ -3,6 +3,7 @@
 
 # Upstream reference (not tracked in this repo)
 docs/claude-code-transcripts/*
+docs/claude-code-transcripts-01252026/*
 
 # Python
 __pycache__/
