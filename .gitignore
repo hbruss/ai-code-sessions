@@ -35,6 +35,7 @@ htmlcov/
 .archive/
 docs/local-dev-guide.md
 docs/pypi.md
+docs/deploy-pypi-1password.md
 
 # Editors
 .vscode/
