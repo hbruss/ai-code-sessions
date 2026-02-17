@@ -184,10 +184,11 @@ ais resume codex --latest
 |--------|-------------|
 | `--limit N` | Max sessions to show (default: 50) |
 | `--latest` | Resume newest session without prompting |
+| `--repo OWNER/NAME` | GitHub repo (owner/name) for commit links (optional) |
 | `--open` | Open the transcript after export |
 | `--changelog / --no-changelog` | Append changelog entry (best-effort) |
 | `--changelog-actor TEXT` | Override changelog actor |
-| `--changelog-evaluator TEXT` | `codex` or `claude` |
+| `--changelog-evaluator [codex|claude]` | Changelog evaluator to use |
 | `--changelog-model TEXT` | Model override |
 
 ---
@@ -204,6 +205,10 @@ Works with:
 **Basic usage:**
 
 ```bash
+# Convert and open in a browser (writes to a temp dir if -o is omitted)
+ais json /path/to/session.jsonl
+
+# Convert into a specific output directory
 ais json /path/to/session.jsonl -o ./output-dir
 ```
 
@@ -211,15 +216,15 @@ ais json /path/to/session.jsonl -o ./output-dir
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output DIR` | Output directory (required) |
-| `-a, --output-auto` | Create subdirectory named after input file |
+| `-o, --output PATH` | Output directory (optional; if omitted, writes to a temp dir and opens in browser) |
+| `-a, --output-auto` | Auto-name output subdirectory based on filename (uses `-o` as parent, or current dir) |
 | `--label TEXT` | Label shown in transcript header |
 | `--json` | Copy input file to output directory |
 | `--repo OWNER/NAME` | GitHub commit links (auto-detected if not specified) |
-| `--open` | Open `index.html` after generating |
+| `--open` | Open `index.html` after generating (default if `-o` is omitted) |
 | `--gist` | Publish to GitHub Gist |
 | `--output-mode` | `merge` (update existing), `overwrite` (replace files), or `clean` (delete dir first) |
-| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count |
+| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count (default: `--no-prune-pages`) |
 
 **When to use each output mode:**
 - `merge` (default): Safe for resumed sessions; only updates changed files
@@ -322,16 +327,16 @@ ais export-latest \
 | `--project-root PATH` | Git repository root |
 | `--start ISO_TIMESTAMP` | Session start time |
 | `--end ISO_TIMESTAMP` | Session end time |
-| `-o, --output DIR` | Output directory (required) |
+| `-o, --output PATH` | Output directory (required) |
 | `--label TEXT` | Session label |
+| `--repo OWNER/NAME` | GitHub commit links (auto-detected if not specified) |
 | `--json` | Copy source JSONL to output |
 | `--open` | Open `index.html` after export |
 | `--output-mode` | `merge`, `overwrite`, or `clean` output directories |
-| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count |
-| `--changelog` | Generate changelog entry |
-| `--no-changelog` | Disable changelog |
+| `--prune-pages/--no-prune-pages` | Remove stale `page-*.html` files beyond the new page count (default: `--prune-pages`) |
+| `--changelog/--no-changelog` | Generate changelog entry (best-effort) |
 | `--changelog-actor TEXT` | Override actor for changelog |
-| `--changelog-evaluator TEXT` | `codex` or `claude` |
+| `--changelog-evaluator [codex|claude]` | Changelog evaluator to use |
 | `--changelog-model TEXT` | Model override |
 
 **Example with changelog:**
@@ -617,6 +622,7 @@ Interactive picker for local Claude sessions.
 ```bash
 ais local
 ais local -o ./output-dir
+ais local -a
 ais local --open
 ```
 
@@ -636,7 +642,7 @@ Build a browsable archive of all local Claude sessions.
 
 ```bash
 ais all -o ./archive
-ais all --source ~/.claude/projects
+ais all --source ~/.claude/projects -o ./archive
 ```
 
 ---

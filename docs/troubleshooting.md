@@ -130,14 +130,15 @@ See [source-matching.md](source-matching.md) for detailed debugging.
 
 **When it happens:**
 
-- **For Codex:** Session metadata didn't include git info (older Codex versions, or not in a git repo)
+- **For Codex:** Session metadata didn't include git info (older Codex versions, or not in a git repo), or the repo URL used a format `ai-code-sessions` couldn't parse (for example, SSH host aliases like `git@github.com-work:owner/repo.git` in older `ai-code-sessions` versions)
 - **For Claude:** No git push output with GitHub URLs was captured during the session
 
 **Solutions:**
 
-1. **Upgrade Codex:** v0.79+ records git repository info in session metadata
-2. **Specify manually:** Add `--repo owner/name` to your export command
-3. **Ignore it:** The warning is informational—transcripts work fine without GitHub links
+1. **Upgrade `ai-code-sessions`:** Newer versions handle more GitHub URL formats (including `github.com-*` SSH host aliases).
+2. **Upgrade Codex:** Newer Codex versions record git repository info in session metadata.
+3. **Specify manually:** Add `--repo owner/name` to `ais ctx`, `ais resume`, `ais export-latest`, or `ais json`.
+4. **Ignore it:** The warning is informational—transcripts work fine without GitHub links.
 
 ---
 
@@ -177,18 +178,21 @@ export CTX_CODEX_CMD="/path/to/codex"
 export CTX_CLAUDE_CMD="/path/to/claude"
 ```
 
-### "Error: Missing option '--output'"
+### "Where did my `ais json` output go?"
 
-**Cause:** Using `ais json` without specifying output directory.
+**Cause:** `ais json` (and `ais local` / `ais web`) default to writing output to a temporary directory and opening it in your browser when `-o/--output` is omitted.
 
 **Solution:**
 
 ```bash
-# Specify output directory
+# Write to a specific output directory
 ais json session.jsonl -o ./output-dir
 
-# Or use auto-naming
+# Or use auto-naming (creates a folder next to your current dir, or under -o)
 ais json session.jsonl -a
+
+# If your browser didn't open, force it
+ais json session.jsonl --open
 ```
 
 ---
