@@ -80,7 +80,10 @@ COMMIT_PATTERN = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)")
 GITHUB_REPO_PATTERN = re.compile(r"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/pull/new/")
 
 # Regex to detect GitHub repo from a git remote URL (SSH/HTTPS).
-GITHUB_REPO_URL_PATTERN = re.compile(r"github\.com[:/](?P<repo>[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)(?:\.git)?(?:$|[/?#])")
+# Supports host aliases like `github.com-work` used in SSH config.
+GITHUB_REPO_URL_PATTERN = re.compile(
+    r"github\.com(?:-[a-zA-Z0-9_.-]+)?[:/](?P<repo>[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)(?:\.git)?(?:$|[/?#])"
+)
 
 PROMPTS_PER_PAGE = 5
 LONG_TEXT_THRESHOLD = 300  # Characters - text blocks longer than this are shown in index

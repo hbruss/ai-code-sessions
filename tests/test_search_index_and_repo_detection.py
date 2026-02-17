@@ -9,6 +9,10 @@ def test_detect_github_repo_from_meta_variants():
     assert (
         core._detect_github_repo_from_meta({"git": {"repositoryUrl": "git@github.com:owner/repo.git"}}) == "owner/repo"
     )
+    assert (
+        core._detect_github_repo_from_meta({"git": {"repositoryUrl": "git@github.com-fe:owner/repo.git"}})
+        == "owner/repo"
+    )
     assert core._detect_github_repo_from_meta({"git": {"repoUrl": "https://github.com/owner/repo.git"}}) == "owner/repo"
     assert core._detect_github_repo_from_meta({"repository_url": "https://github.com/owner/repo"}) == "owner/repo"
 
