@@ -266,6 +266,19 @@ ais changelog backfill \
   --max-concurrency 5
 ```
 
+### "claude --print" is slow or times out during changelog generation
+
+**Cause:** Claude Code may start configured MCP servers (and do repo indexing) even for headless `--print` invocations.
+
+**Solutions:**
+
+1. Upgrade `ai-code-sessions` to `>=0.1.8` (MCP is disabled for headless changelog evaluation).
+2. If you are invoking `claude --print` yourself, add:
+
+   ```bash
+   claude --strict-mcp-config --mcp-config '{"mcpServers":{}}' --print "..."
+   ```
+
 ---
 
 ## Configuration Issues

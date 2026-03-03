@@ -139,6 +139,8 @@ Codex CLI documents its model list (for example, `gpt-5.2-codex` and `gpt-5.1-co
 
 Uses Claude Code CLI with Opus and 8192 thinking tokens (default):
 
+> **Note:** When using Claude for changelog evaluation, `ai-code-sessions` disables MCP servers for the headless `claude --print` run (via `--strict-mcp-config` and an empty `--mcp-config`). This avoids slow/flaky MCP startup and makes changelog generation more deterministic.
+
 ```bash
 export CTX_CHANGELOG_EVALUATOR="claude"
 export CTX_CHANGELOG_MODEL="opus"
