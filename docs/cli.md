@@ -66,7 +66,7 @@ uv run --project . ai-code-sessions --help
 
 ### `ais setup`
 
-Run an interactive setup wizard to configure global and per-repo settings.
+Run the interactive onboarding wizard.
 
 ```bash
 ais setup
@@ -74,10 +74,12 @@ ais setup
 
 **What it does:**
 
-1. Asks for your GitHub username (for changelog attribution)
-2. Sets your preferred timezone for session folder names
-3. Configures changelog generation preferences
-4. Optionally updates your `.gitignore`
+1. Asks which CLI(s) `ais ctx` should wrap
+2. Asks whether changelog generation is enabled
+3. Asks which evaluator should generate changelog entries
+4. Checks workflow readiness (`codex`, `claude`, `jq`, `rg`, plus optional helpers)
+5. Asks about global vs repo config scope unless flags already fixed that choice
+6. Writes config and prints manual skill-install commands for the relevant Codex and Claude targets
 
 **Options:**
 
@@ -103,6 +105,18 @@ ais setup --no-global
 # Force overwrite existing configs
 ais setup --force
 ```
+
+---
+
+### `ais skill path`
+
+Print the packaged path for a shipped skill bundle.
+
+```bash
+ais skill path changelog
+```
+
+Right now the shipped skill is `changelog`.
 
 ---
 

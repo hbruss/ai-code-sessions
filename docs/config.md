@@ -25,11 +25,14 @@ ais setup
 
 The wizard will:
 
-1. Ask for your GitHub username (for changelog attribution)
-2. Set your preferred timezone for session folder names
-3. Configure changelog generation preferences
-4. Optionally update your `.gitignore`
-5. Write both global and per-repo config files
+1. Ask which CLI(s) `ais ctx` should wrap
+2. Ask whether changelog generation is enabled
+3. Ask which evaluator should generate changelog entries
+4. Check workflow readiness (`codex`, `claude`, `jq`, `rg`, and optional helpers)
+5. Ask about global and repo config scope unless flags already fixed that choice
+6. Optionally update your `.gitignore`
+7. Print manual skill-install guidance for Codex and/or Claude
+8. Write the requested config files
 
 ### Wizard Options
 
@@ -49,6 +52,22 @@ ais setup --force
 # Target a specific repo
 ais setup --project-root /path/to/my/repo
 ```
+
+### Config Scope vs Skill Scope
+
+These are separate choices:
+
+- **Config scope** controls where `.ai-code-sessions.toml` values are written.
+- **Skill-install scope** controls where the packaged changelog skill is copied.
+
+Use `ais skill path changelog` plus the install steps in [`skills.md`](skills.md) to copy the shipped bundle into:
+
+- `~/.codex/skills/changelog/`
+- `./.codex/skills/changelog/`
+- `~/.claude/skills/changelog/`
+- `./.claude/skills/changelog/`
+
+`skills.md` includes both POSIX-shell examples and Windows PowerShell guidance.
 
 ---
 

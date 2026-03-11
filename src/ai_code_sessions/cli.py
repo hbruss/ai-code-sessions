@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,7 @@ from .core import (
     _load_config,
     _maybe_copy_native_jsonl_into_legacy_session_dir,
     _now_iso8601,
+    _packaged_skill_path,
     _read_jsonl_objects,
     _read_last_jsonl_object,
     _render_config_toml,
@@ -100,6 +102,198 @@ def cli(verbose, log_file):
     configure_logging(verbosity=verbose, log_file=log_path)
 
 
+def _setup_tool_command(*, tool: str, cfg: dict) -> str:
+    if tool == "codex":
+        cfg_cmd = _config_get(cfg, "ctx.codex_cmd")
+        cfg_value = cfg_cmd.strip() if isinstance(cfg_cmd, str) else ""
+        return os.environ.get("CTX_CODEX_CMD") or cfg_value or "codex"
+    cfg_cmd = _config_get(cfg, "ctx.claude_cmd")
+    cfg_value = cfg_cmd.strip() if isinstance(cfg_cmd, str) else ""
+    return os.environ.get("CTX_CLAUDE_CMD") or cfg_value or "claude"
+
+
+def _default_setup_wrapped_cli_choice(cfg: dict) -> str:
+    codex_cmd = _setup_tool_command(tool="codex", cfg=cfg)
+    claude_cmd = _setup_tool_command(tool="claude", cfg=cfg)
+    has_codex = shutil.which(codex_cmd) is not None
+    has_claude = shutil.which(claude_cmd) is not None
+    if has_codex and has_claude:
+        return "both"
+    if has_claude:
+        return "claude"
+    return "codex"
+
+
+def _expanded_setup_wrapped_tools(choice: str) -> tuple[str, ...]:
+    normalized = (choice or "").strip().lower()
+    if normalized == "both":
+        return ("codex", "claude")
+    if normalized in {"codex", "claude"}:
+        return (normalized,)
+    raise click.ClickException(f"Unsupported wrapped CLI choice: {choice!r}")
+
+
+def _probe_cli_command(command: str) -> tuple[bool, str]:
+    resolved = shutil.which(command)
+    if not resolved:
+        return False, f"{command!r} not found on PATH"
+    for flag in ("--version", "--help"):
+        try:
+            proc = subprocess.run(
+                [resolved, flag],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            last_error = str(exc)
+            continue
+        if proc.returncode == 0:
+            return True, resolved
+        last_error = proc.stderr.strip() or proc.stdout.strip() or f"non-zero exit for {flag}"
+    return False, f"{resolved} found but did not respond cleanly ({last_error})"
+
+
+def _setup_status(level: str, subject: str, detail: str) -> dict[str, str]:
+    return {"level": level, "subject": subject, "detail": detail}
+
+
+def _powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _collect_setup_preflight_results(
+    *,
+    cfg: dict,
+    root: Path,
+    wrapped_tools: tuple[str, ...],
+    changelog_enabled: bool,
+    evaluator: str | None,
+    actor: str,
+    write_repo: bool,
+) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+
+    if write_repo:
+        if root.exists() and root.is_dir():
+            results.append(_setup_status("PASS", "repo root", f"using {root}"))
+        else:
+            results.append(_setup_status("FAIL", "repo root", f"{root} does not exist or is not a directory"))
+
+    tools_to_check = list(wrapped_tools)
+    if changelog_enabled and evaluator and evaluator not in tools_to_check:
+        tools_to_check.append(evaluator)
+
+    for tool in ("codex", "claude"):
+        if tool not in tools_to_check:
+            continue
+        command = _setup_tool_command(tool=tool, cfg=cfg)
+        ok, detail = _probe_cli_command(command)
+        label = f"{tool} CLI"
+        if ok:
+            results.append(_setup_status("PASS", label, f"available at {detail}"))
+        else:
+            results.append(_setup_status("FAIL", label, f"{detail}. This blocks the selected setup workflow."))
+
+    actor = (
+        actor.strip()
+        or _config_get(cfg, "changelog.actor")
+        or os.environ.get("CTX_ACTOR")
+        or _detect_actor(project_root=root)
+    )
+    if changelog_enabled:
+        if actor:
+            results.append(_setup_status("PASS", "changelog actor", f"resolved to {actor}"))
+        else:
+            results.append(
+                _setup_status("WARN", "changelog actor", "not auto-detected; you will need to provide it manually")
+            )
+
+    tool_requirements = {
+        "jq": "packaged changelog skill helper scripts will be limited without jq",
+        "rg": "packaged changelog skill helper scripts will be limited without rg",
+        "fd": "optional helper for faster changelog file discovery",
+        "gh": "optional helper for gist-related workflows",
+    }
+    for tool_name in ("jq", "rg", "fd", "gh"):
+        resolved = shutil.which(tool_name)
+        if resolved:
+            results.append(_setup_status("PASS", tool_name, f"available at {resolved}"))
+            continue
+
+        detail = tool_requirements[tool_name]
+        results.append(_setup_status("WARN", tool_name, f"missing; {detail}"))
+
+    return results
+
+
+def _print_setup_preflight(results: list[dict[str, str]]) -> None:
+    click.echo("")
+    click.echo("Readiness Summary")
+    for result in results:
+        click.echo(f"{result['level']} {result['subject']}: {result['detail']}")
+
+
+def _setup_install_targets(
+    *, root: Path, wrapped_tools: tuple[str, ...], evaluator: str | None
+) -> list[tuple[str, Path]]:
+    targets: list[tuple[str, Path]] = []
+    tools = list(wrapped_tools)
+    if evaluator and evaluator not in tools:
+        tools.append(evaluator)
+
+    for tool in tools:
+        if tool == "codex":
+            targets.extend(
+                [
+                    ("user-wide Codex", Path.home() / ".codex" / "skills" / "changelog"),
+                    ("project-local Codex", root / ".codex" / "skills" / "changelog"),
+                ]
+            )
+        elif tool == "claude":
+            targets.extend(
+                [
+                    ("user-wide Claude", Path.home() / ".claude" / "skills" / "changelog"),
+                    ("project-local Claude", root / ".claude" / "skills" / "changelog"),
+                ]
+            )
+    return targets
+
+
+def _print_setup_skill_install_guidance(
+    *,
+    skill_path: Path,
+    root: Path,
+    wrapped_tools: tuple[str, ...],
+    evaluator: str | None,
+) -> None:
+    click.echo("")
+    is_windows = sys.platform.startswith("win")
+    click.echo("Manual skill install (PowerShell)" if is_windows else "Manual skill install (POSIX shell)")
+    click.echo(f"Packaged changelog skill: {skill_path}")
+    if is_windows:
+        click.echo(
+            "Note: prime-session.sh is a POSIX shell helper. Use a POSIX shell environment if you want to run it."
+        )
+
+    for label, destination in _setup_install_targets(root=root, wrapped_tools=wrapped_tools, evaluator=evaluator):
+        click.echo("")
+        click.echo(label)
+        if is_windows:
+            source_dir = _powershell_quote(str(skill_path))
+            target_dir = _powershell_quote(str(destination))
+            skill_file = _powershell_quote(str(destination / "SKILL.md"))
+            click.echo(f"  New-Item -ItemType Directory -Force -Path {target_dir} | Out-Null")
+            click.echo(f"  Copy-Item -Recurse -Force (Join-Path {source_dir} '*') {target_dir}")
+            click.echo(f"  Test-Path {skill_file}")
+        else:
+            src = shlex.quote(str(skill_path))
+            target = shlex.quote(str(destination))
+            click.echo(f"  mkdir -p {target}")
+            click.echo(f"  cp -R {src}/. {target}")
+            click.echo(f"  test -f {target}/SKILL.md")
+
+
 @cli.command("setup")
 @click.option(
     "--project-root",
@@ -119,7 +313,7 @@ def cli(verbose, log_file):
 )
 @click.option("--force", is_flag=True, help="Overwrite existing config files.")
 def setup_cmd(project_root, write_global, write_repo, force):
-    """Interactive setup wizard (writes config files and optional .gitignore entries)."""
+    """Interactive onboarding wizard for config, checks, and manual skill install guidance."""
     root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
 
     global_path = _global_config_path()
@@ -136,14 +330,21 @@ def setup_cmd(project_root, write_global, write_repo, force):
     )
     default_model = _config_get(existing_cfg, "changelog.model") or ""
     default_claude_tokens = _config_get(existing_cfg, "changelog.claude_thinking_tokens") or 8192
+    default_wrapped_choice = _default_setup_wrapped_cli_choice(existing_cfg)
 
-    actor = questionary.text("Changelog actor (e.g. GitHub username):", default=str(default_actor)).ask()
-    if actor is None:
-        return
+    click.echo("ai-code-sessions setup")
+    click.echo(
+        "This onboarding flow configures ais ctx, changelog evaluation, readiness checks, and manual skill installation guidance."
+    )
 
-    tz = questionary.text("Time zone for session folder names (IANA TZ):", default=str(default_tz)).ask()
-    if tz is None:
+    wrapped_choice = questionary.select(
+        "Which CLI(s) should ais ctx wrap?",
+        choices=["codex", "claude", "both"],
+        default=default_wrapped_choice,
+    ).ask()
+    if wrapped_choice is None:
         return
+    wrapped_tools = _expanded_setup_wrapped_tools(wrapped_choice)
 
     changelog_enabled = questionary.confirm(
         "Enable changelog generation by default?",
@@ -164,15 +365,14 @@ def setup_cmd(project_root, write_global, write_repo, force):
         if evaluator is None:
             return
         evaluator = evaluator.strip().lower()
-        if evaluator == "codex":
-            model = questionary.text(
-                "Optional model override (e.g. gpt-5.2-codex, gpt-5.1-codex-mini); leave blank for default:",
-                default=default_model,
-            ).ask()
-            if model is None:
-                return
-            model = model.strip() or None
-        elif evaluator == "claude":
+        model = questionary.text(
+            "Optional model override; leave blank for the CLI default:",
+            default=default_model,
+        ).ask()
+        if model is None:
+            return
+        model = model.strip() or None
+        if evaluator == "claude":
             raw = questionary.text(
                 "Optional Claude thinking token budget (default: 8192):",
                 default=str(default_claude_tokens),
@@ -187,6 +387,33 @@ def setup_cmd(project_root, write_global, write_repo, force):
                     raise click.ClickException("Claude thinking tokens must be an integer")
                 if claude_tokens <= 0:
                     raise click.ClickException("Claude thinking tokens must be a positive integer")
+
+    actor = questionary.text("Changelog actor (e.g. GitHub username):", default=str(default_actor)).ask()
+    if actor is None:
+        return
+
+    tz = questionary.text("Time zone for session folder names (IANA TZ):", default=str(default_tz)).ask()
+    if tz is None:
+        return
+
+    ctx = click.get_current_context()
+    if ctx.get_parameter_source("write_global") == click.core.ParameterSource.DEFAULT:
+        write_global_choice = questionary.confirm(
+            "Write a global config file for this user?",
+            default=bool(write_global),
+        ).ask()
+        if write_global_choice is None:
+            return
+        write_global = bool(write_global_choice)
+
+    if ctx.get_parameter_source("write_repo") == click.core.ParameterSource.DEFAULT:
+        write_repo_choice = questionary.confirm(
+            "Write a repo config file inside this project?",
+            default=bool(write_repo),
+        ).ask()
+        if write_repo_choice is None:
+            return
+        write_repo = bool(write_repo_choice)
 
     commit_changelog = questionary.confirm(
         "Do you want .changelog entries to be committable in this repo?",
@@ -205,6 +432,17 @@ def setup_cmd(project_root, write_global, write_repo, force):
             cfg_out["changelog"]["model"] = model
         if claude_tokens:
             cfg_out["changelog"]["claude_thinking_tokens"] = claude_tokens
+
+    preflight_results = _collect_setup_preflight_results(
+        cfg=existing_cfg,
+        root=root,
+        wrapped_tools=wrapped_tools,
+        changelog_enabled=bool(changelog_enabled),
+        evaluator=evaluator,
+        actor=actor,
+        write_repo=bool(write_repo),
+    )
+    _print_setup_preflight(preflight_results)
 
     cfg_text = _render_config_toml(cfg_out)
 
@@ -239,6 +477,19 @@ def setup_cmd(project_root, write_global, write_repo, force):
         click.echo("Updated .gitignore to ignore .changelog/")
     else:
         click.echo("Note: ensure your repo does not ignore .changelog/ if you want to commit entries.")
+
+    _print_setup_skill_install_guidance(
+        skill_path=_packaged_skill_path("changelog"),
+        root=root,
+        wrapped_tools=wrapped_tools,
+        evaluator=evaluator if changelog_enabled else None,
+    )
+
+    click.echo("")
+    click.echo("Next steps")
+    click.echo("  ais config show")
+    for tool in wrapped_tools:
+        click.echo(f'  ais ctx "My first session" --{tool}')
 
 
 @cli.command("local")
@@ -1182,6 +1433,19 @@ def resume_cmd(
 
 
 cli.add_command(resume_cmd, "ctx-resume")
+
+
+@cli.group("skill")
+def skill_cli():
+    """Inspect packaged skills."""
+    pass
+
+
+@skill_cli.command("path")
+@click.argument("skill_name")
+def skill_path_cmd(skill_name):
+    """Print the packaged path for a shipped skill."""
+    click.echo(str(_packaged_skill_path(skill_name)))
 
 
 @cli.group("config")

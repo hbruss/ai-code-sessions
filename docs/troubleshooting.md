@@ -12,10 +12,13 @@ Before diving into specific issues, try these quick checks:
 # 1. Verify installation
 ais --version
 ais --help
+ais skill path changelog
 
 # 2. Check if AI tools are installed
 codex --version
 claude --version
+jq --version
+rg --version
 
 # 3. Verify session logs exist
 ls -la ~/.codex/sessions/
@@ -24,6 +27,8 @@ ls -la ~/.claude/projects/
 # 4. Check recent session directory
 ls -la .codex/sessions/ || ls -la .claude/sessions/
 ```
+
+If `ais setup` reports missing `jq` or `rg`, `ais ctx` and changelog generation can still work, but the packaged changelog skill helper scripts will be limited until those tools are installed.
 
 ---
 

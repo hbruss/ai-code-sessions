@@ -32,7 +32,7 @@ What I've added on top:
 - **Automatic source matching** for finding the right log file when running concurrent sessions
 - **An `ais ctx` workflow** for naming sessions and organizing exports by project
 - **An append-only changelog system** for generating structured summaries
-- **An interactive setup wizard** for easy configuration
+- **An interactive onboarding wizard** for workflow setup, readiness checks, and manual skill-install guidance
 
 But the rendering engine—the part that makes the HTML output look good—that's Simon's contribution. If you find the transcripts beautiful and readable, credit goes to him. My additions are plumbing around the edges.
 
@@ -99,12 +99,30 @@ ais setup
 ```
 
 The wizard will:
-- Ask for your GitHub username (for changelog attribution)
-- Set your preferred timezone for session folder names
-- Configure changelog generation preferences
-- Optionally update your `.gitignore`
+- Ask which CLI(s) `ais ctx` should wrap
+- Ask which CLI should generate changelog entries
+- Check readiness for the selected workflow (`codex`, `claude`) and warn about helper-tool support (`jq`, `rg`, and optional helpers)
+- Ask whether config should be written globally, per-repo, or both
+- Print exact manual skill-install commands for Codex and/or Claude
 
-### 3. Start Your First Session
+### 3. Install the Shipped Changelog Skill (Manual)
+
+Use the packaged bundle path:
+
+```bash
+ais skill path changelog
+```
+
+Then copy it into the scope you want. Example for user-wide Codex:
+
+```bash
+mkdir -p ~/.codex/skills/changelog
+cp -R "$(ais skill path changelog)"/. ~/.codex/skills/changelog/
+```
+
+Detailed instructions for Codex user-wide, Codex project-local, Claude user-wide, Claude project-local, and Windows PowerShell installs live in [`docs/skills.md`](docs/skills.md).
+
+### 4. Start Your First Session
 
 ```bash
 # With Codex
@@ -118,7 +136,7 @@ When you exit the AI tool (Ctrl+D or `/exit`), your session is automatically exp
 - `.codex/sessions/YYYY-MM-DD-HHMM_Your_Label/` (for Codex)
 - `.claude/sessions/YYYY-MM-DD-HHMM_Your_Label/` (for Claude)
 
-### 4. View Your Transcript
+### 5. View Your Transcript
 
 ```bash
 # macOS
@@ -290,13 +308,21 @@ All commands are available via `ais` (short) or `ai-code-sessions` (full).
 
 ### `ais setup`
 
-Interactive wizard to configure global and per-repo settings.
+Interactive onboarding wizard for workflow choices, readiness checks, config scope, and manual skill-install guidance.
 
 ```bash
 ais setup
 ais setup --no-global        # Skip global config
 ais setup --no-repo          # Skip per-repo config
 ais setup --force            # Overwrite existing configs
+```
+
+### `ais skill path changelog`
+
+Print the packaged path for the shipped changelog skill bundle.
+
+```bash
+ais skill path changelog
 ```
 
 ### `ais ctx`
@@ -550,6 +576,7 @@ Detailed documentation is available in the `docs/` directory:
 | [docs/cli.md](docs/cli.md) | Complete CLI reference |
 | [docs/ctx.md](docs/ctx.md) | The `ais ctx` workflow |
 | [docs/config.md](docs/config.md) | Configuration options |
+| [docs/skills.md](docs/skills.md) | Manual skill installation for Codex and Claude |
 | [docs/changelog.md](docs/changelog.md) | Changelog generation |
 | [docs/source-matching.md](docs/source-matching.md) | How source file matching works |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |

@@ -3,6 +3,7 @@
 import json
 import html
 import hashlib
+import importlib.resources as importlib_resources
 import itertools
 from dataclasses import dataclass
 import logging
@@ -39,6 +40,55 @@ _macros = _macros_template.module
 _JSONL_IO_LOCK = threading.Lock()
 _LOG_IO_LOCK = threading.Lock()
 _LOGGER = logging.getLogger("ai_code_sessions")
+_PACKAGED_SKILLS = frozenset({"changelog"})
+
+
+def _packaged_skill_cache_dir() -> Path:
+    """Return the cache directory used for materialized packaged skills."""
+    return Path(tempfile.gettempdir()) / "ai-code-sessions-packaged-skills"
+
+
+def _filesystem_resource_path(resource) -> Path | None:
+    """Return a filesystem path when the resource is directly backed by one."""
+    try:
+        candidate = Path(os.fspath(resource))
+    except TypeError:
+        return None
+    return candidate if candidate.exists() else None
+
+
+def _copy_traversable_tree(resource, destination: Path) -> None:
+    """Copy a Traversable resource tree onto the filesystem."""
+    if resource.is_dir():
+        destination.mkdir(parents=True, exist_ok=True)
+        for child in resource.iterdir():
+            _copy_traversable_tree(child, destination / child.name)
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with resource.open("rb") as src, destination.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
+
+
+def _packaged_skill_path(skill_name: str) -> Path:
+    """Return a usable filesystem path for a shipped skill bundle."""
+    normalized = (skill_name or "").strip().lower()
+    if normalized not in _PACKAGED_SKILLS:
+        raise click.ClickException(f"Unsupported skill: {skill_name}")
+
+    skill_dir = importlib_resources.files("ai_code_sessions").joinpath("skills", normalized)
+    if not skill_dir.is_dir():
+        raise click.ClickException(f"Packaged skill not found: {normalized}")
+
+    skill_path = _filesystem_resource_path(skill_dir)
+    if skill_path is not None:
+        return skill_path
+
+    materialized_dir = _packaged_skill_cache_dir() / normalized
+    if materialized_dir.exists():
+        shutil.rmtree(materialized_dir)
+    _copy_traversable_tree(skill_dir, materialized_dir)
+    return materialized_dir
 
 
 def get_template(name):

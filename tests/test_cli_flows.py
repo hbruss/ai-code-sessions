@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -229,3 +230,21 @@ def test_main_invokes_cli(monkeypatch):
     ai_code_sessions.main()
 
     assert called["ran"] is True
+
+
+def test_skill_path_outputs_packaged_changelog_path():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["skill", "path", "changelog"])
+
+    assert result.exit_code == 0
+    skill_path = Path(result.output.strip())
+    assert skill_path.name == "changelog"
+    assert (skill_path / "SKILL.md").exists()
+
+
+def test_skill_path_errors_for_unknown_skill():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["skill", "path", "unknown"])
+
+    assert result.exit_code != 0
+    assert "Unsupported skill" in result.output

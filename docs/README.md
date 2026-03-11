@@ -22,11 +22,20 @@ pipx ensurepath
 # Run the setup wizard
 ais setup
 
+# Find the packaged changelog skill
+ais skill path changelog
+
+# Install it into Codex user-wide (example)
+mkdir -p ~/.codex/skills/changelog
+cp -R "$(ais skill path changelog)"/. ~/.codex/skills/changelog/
+
 # Start a session with automatic export
 ais ctx "Fix the login bug" --codex
 
 # When you exit, a transcript appears in .codex/sessions/ (or .claude/sessions/)
 ```
+
+For Claude installs, repo-local installs, and Windows PowerShell examples, see [skills.md](skills.md).
 
 ---
 
@@ -39,6 +48,7 @@ ais ctx "Fix the login bug" --codex
 | [cli.md](cli.md) | Complete CLI reference with all commands and options |
 | [ctx.md](ctx.md) | The `ais ctx` workflow for automatic session export |
 | [config.md](config.md) | Configuration files, environment variables, and setup |
+| [skills.md](skills.md) | Manual installation of the shipped changelog skill bundle |
 
 ### Features
 
@@ -171,7 +181,12 @@ Three levels of configuration (highest priority first):
 2. **Environment variables**: `CTX_CHANGELOG`, `CTX_ACTOR`, etc.
 3. **Config files**: `.ai-code-sessions.toml` (per-repo) or global config
 
-Run `ais setup` for an interactive wizard that handles all configuration.
+Run `ais setup` for the onboarding wizard that handles workflow choices, readiness checks, config scope, and manual skill-install guidance.
+
+Config scope and skill-install scope are separate:
+
+1. **Config scope** decides where `.ai-code-sessions.toml` values live.
+2. **Skill-install scope** decides whether the packaged changelog skill is copied into `~/.codex/skills`, `~/.claude/skills`, `./.codex/skills`, or `./.claude/skills`.
 
 ---
 
@@ -188,7 +203,7 @@ What this fork adds:
 - Automatic source matching for concurrent sessions
 - The `ais ctx` workflow
 - Changelog generation
-- Interactive setup wizard
+- Interactive onboarding wizard
 
 ---
 

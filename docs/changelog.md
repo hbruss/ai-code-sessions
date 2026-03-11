@@ -91,7 +91,13 @@ Run the interactive wizard:
 ais setup
 ```
 
-It will ask about changelog generation and write the config for you.
+It will ask about changelog generation, ask which evaluator should generate entries, run readiness checks, and print the manual changelog-skill install commands relevant to your selected workflow.
+
+To find the packaged changelog skill bundle directly:
+
+```bash
+ais skill path changelog
+```
 
 ### Option 3: Config File
 

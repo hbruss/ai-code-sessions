@@ -32,6 +32,15 @@ pipx install ai-code-sessions
 pipx ensurepath
 ```
 
+Before your first `ais ctx` run, use the onboarding wizard to choose which CLI(s) you want `ais ctx` to wrap, configure changelog generation, and print the manual changelog-skill install commands that match your workflow:
+
+```bash
+ais setup
+ais skill path changelog
+```
+
+Full manual skill-install instructions for Codex user-wide, Codex project-local, Claude user-wide, Claude project-local, and Windows PowerShell installs live in [`skills.md`](skills.md).
+
 ---
 
 ## Basic Usage
@@ -233,11 +242,19 @@ This enables:
 
 ### Setup Wizard
 
-Run the interactive wizard to configure all options:
+Run the interactive onboarding wizard to configure all options:
 
 ```bash
 ais setup
 ```
+
+The wizard will:
+
+1. Ask which CLI(s) `ais ctx` should wrap
+2. Ask whether changelog generation should be enabled and, if so, which evaluator should write those entries
+3. Run readiness checks for the selected workflow
+4. Ask whether config should be written globally, per-repo, or both
+5. Print exact manual skill-install commands for the relevant Codex and/or Claude targets
 
 ### Config File
 
@@ -336,6 +353,7 @@ Add to your `.gitignore`:
 ```
 
 The setup wizard (`ais setup`) can do this for you.
+It can add the ignore entries and show the matching manual skill-install commands, but it does not copy the shipped skill bundle automatically.
 
 ---
 

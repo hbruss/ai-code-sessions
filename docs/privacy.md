@@ -66,6 +66,7 @@ Prevent accidental commits:
 ```
 
 The `ais setup` wizard can add these entries for you.
+That onboarding flow also prints the manual changelog-skill install commands for Codex and/or Claude, but it leaves the actual file copy explicit so you can inspect the install scope yourself.
 
 ### 3. Review Before Sharing
 
