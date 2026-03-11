@@ -81,18 +81,28 @@ The index page shows a timeline of every prompt in the session, with statistics:
 
 ## Quick Start
 
-### 1. Install
+### 1. Install On macOS (Apple Silicon)
+
+Open Terminal and run:
 
 ```bash
-# Install the CLI globally
-pipx install ai-code-sessions
-pipx ensurepath
+# Install pipx if needed
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+export PATH="$HOME/.local/bin:$PATH"
 
-# Verify it works
+# Install ai-code-sessions
+python3 -m pipx install ai-code-sessions
+
+# Recommended helper tools for the shipped changelog skill
+brew install jq ripgrep
+
+# Verify the install
+ais --version
 ais --help
 ```
 
-### 2. Run the Setup Wizard (Recommended)
+### 2. Run the Onboarding Wizard (Recommended)
 
 ```bash
 ais setup
@@ -105,19 +115,28 @@ The wizard will:
 - Ask whether config should be written globally, per-repo, or both
 - Print exact manual skill-install commands for Codex and/or Claude
 
-### 3. Install the Shipped Changelog Skill (Manual)
+### 3. Install The Shipped Changelog Skill (Optional, Manual)
 
-Use the packaged bundle path:
+Find the packaged bundle path:
 
 ```bash
 ais skill path changelog
 ```
 
-Then copy it into the scope you want. Example for user-wide Codex:
+Install it user-wide for Codex:
 
 ```bash
 mkdir -p ~/.codex/skills/changelog
 cp -R "$(ais skill path changelog)"/. ~/.codex/skills/changelog/
+test -f ~/.codex/skills/changelog/SKILL.md
+```
+
+Install it user-wide for Claude Code:
+
+```bash
+mkdir -p ~/.claude/skills/changelog
+cp -R "$(ais skill path changelog)"/. ~/.claude/skills/changelog/
+test -f ~/.claude/skills/changelog/SKILL.md
 ```
 
 Detailed instructions for Codex user-wide, Codex project-local, Claude user-wide, Claude project-local, and Windows PowerShell installs live in [`docs/skills.md`](docs/skills.md).
