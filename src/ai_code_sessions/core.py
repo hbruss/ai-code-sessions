@@ -200,10 +200,10 @@ def extract_text_from_content(content):
     if isinstance(content, str):
         return content.strip()
     elif isinstance(content, list):
-        # Extract text from content blocks of type "text"
+        # Extract text from content blocks across Claude/Codex message formats.
         texts = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
+            if isinstance(block, dict) and block.get("type") in {"text", "input_text", "output_text"}:
                 text = block.get("text", "")
                 if text:
                     texts.append(text)
@@ -250,6 +250,44 @@ def get_session_summary(filepath, max_length=200):
 
 def _get_jsonl_summary(filepath, max_length=200):
     """Extract summary from JSONL file."""
+
+    def _truncate_summary(text: str) -> str:
+        if len(text) > max_length:
+            return text[: max_length - 3] + "..."
+        return text
+
+    def _event_user_message_text(obj: dict) -> str:
+        if obj.get("type") != "event_msg":
+            return ""
+        payload = obj.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "user_message":
+            return ""
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return ""
+
+    def _user_text_from_jsonl_obj(obj: dict) -> str:
+        if obj.get("type") == "user" and not obj.get("isMeta"):
+            content = (obj.get("message") or {}).get("content")
+            text = extract_text_from_content(content)
+            if text and not text.startswith("<"):
+                return text
+
+        if obj.get("type") != "response_item":
+            return ""
+
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return ""
+        if payload.get("type") != "message" or payload.get("role") != "user":
+            return ""
+
+        text = extract_text_from_content(payload.get("content"))
+        if text and not text.startswith("<"):
+            return text
+        return ""
+
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -260,10 +298,7 @@ def _get_jsonl_summary(filepath, max_length=200):
                     obj = json.loads(line)
                     # First priority: summary type entries
                     if obj.get("type") == "summary" and obj.get("summary"):
-                        summary = obj["summary"]
-                        if len(summary) > max_length:
-                            return summary[: max_length - 3] + "..."
-                        return summary
+                        return _truncate_summary(obj["summary"])
                 except json.JSONDecodeError:
                     continue
 
@@ -275,13 +310,22 @@ def _get_jsonl_summary(filepath, max_length=200):
                     continue
                 try:
                     obj = json.loads(line)
-                    if obj.get("type") == "user" and not obj.get("isMeta") and obj.get("message", {}).get("content"):
-                        content = obj["message"]["content"]
-                        text = extract_text_from_content(content)
-                        if text and not text.startswith("<"):
-                            if len(text) > max_length:
-                                return text[: max_length - 3] + "..."
-                            return text
+                except json.JSONDecodeError:
+                    continue
+                text = _event_user_message_text(obj)
+                if text:
+                    return _truncate_summary(text)
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    text = _user_text_from_jsonl_obj(obj)
+                    if text:
+                        return _truncate_summary(text)
                 except json.JSONDecodeError:
                     continue
     except Exception:
@@ -850,6 +894,19 @@ def _parse_iso8601(value: str):
 
 
 CHANGELOG_ENTRY_SCHEMA_VERSION = 1
+_AUTO_CHANGELOG_TRANSCRIPT_FIELD = object()
+
+_NATIVE_SESSION_IDENTITY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["tool", "native_source_path", "start", "end"],
+    "properties": {
+        "tool": {"type": "string", "minLength": 1},
+        "native_source_path": {"type": "string", "minLength": 1},
+        "start": {"type": "string", "minLength": 1},
+        "end": {"type": "string", "minLength": 1},
+    },
+}
 
 _CHANGELOG_ENTRY_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -894,10 +951,19 @@ _CHANGELOG_ENTRY_SCHEMA = {
             "additionalProperties": False,
             "required": ["output_dir", "index_html", "source_jsonl", "source_match_json"],
             "properties": {
-                "output_dir": {"type": "string", "minLength": 1},
-                "index_html": {"type": "string", "minLength": 1},
+                "output_dir": {"type": ["string", "null"], "minLength": 1},
+                "index_html": {"type": ["string", "null"], "minLength": 1},
                 "source_jsonl": {"type": "string", "minLength": 1},
-                "source_match_json": {"type": "string", "minLength": 1},
+                "source_match_json": {"type": ["string", "null"], "minLength": 1},
+            },
+        },
+        "source": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["kind", "identity"],
+            "properties": {
+                "kind": {"type": "string", "const": "native_session"},
+                "identity": _NATIVE_SESSION_IDENTITY_SCHEMA,
             },
         },
         "summary": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -1011,6 +1077,225 @@ def _sanitize_changelog_text(text: str) -> str:
     if not text:
         return ""
     return "".join(c for c in text if c.isprintable() and not _UNICODE_GARBAGE_RE.search(c))
+
+
+def _canonicalize_iso8601_utc(value: str) -> str | None:
+    """Normalize an ISO-8601 timestamp string to UTC with a canonical offset."""
+
+    dt = _parse_iso8601(value)
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _canonical_session_identity_for_source(*, tool: str, source_jsonl: Path, start: str, end: str) -> dict:
+    """Build the canonical identity for a native session source."""
+
+    tool_value = (tool or "unknown").strip().lower() if isinstance(tool, str) else "unknown"
+    start_value = _canonicalize_iso8601_utc(start) or (start.strip() if isinstance(start, str) else "")
+    end_value = _canonicalize_iso8601_utc(end) or (end.strip() if isinstance(end, str) else "")
+
+    return {
+        "tool": tool_value,
+        "native_source_path": str(Path(source_jsonl).resolve()),
+        "start": start_value,
+        "end": end_value,
+    }
+
+
+def _entry_session_identity(entry: dict) -> dict | None:
+    """Return the canonical native-session identity for a changelog entry."""
+
+    if not isinstance(entry, dict):
+        return None
+
+    source = entry.get("source")
+    if isinstance(source, dict):
+        identity = source.get("identity")
+        if isinstance(identity, dict):
+            identity_tool = identity.get("tool")
+            identity_source_jsonl = identity.get("native_source_path")
+            identity_start = identity.get("start")
+            identity_end = identity.get("end")
+            if (
+                isinstance(identity_tool, str)
+                and identity_tool.strip()
+                and isinstance(identity_source_jsonl, str)
+                and identity_source_jsonl.strip()
+                and isinstance(identity_start, str)
+                and identity_start.strip()
+                and isinstance(identity_end, str)
+                and identity_end.strip()
+            ):
+                canonical_identity = _canonical_session_identity_for_source(
+                    tool=identity_tool,
+                    source_jsonl=Path(identity_source_jsonl),
+                    start=identity_start,
+                    end=identity_end,
+                )
+                if canonical_identity["start"] and canonical_identity["end"]:
+                    return canonical_identity
+
+    tool = entry.get("tool")
+    start = entry.get("start")
+    end = entry.get("end")
+
+    if not isinstance(tool, str) or not tool.strip():
+        return None
+    if not isinstance(start, str) or not start.strip():
+        return None
+    if not isinstance(end, str) or not end.strip():
+        return None
+
+    transcript = entry.get("transcript")
+    source_jsonl = transcript.get("source_jsonl") if isinstance(transcript, dict) else None
+    source_match_json = transcript.get("source_match_json") if isinstance(transcript, dict) else None
+    return _canonical_session_identity_from_transcript(
+        tool=tool,
+        start=start,
+        end=end,
+        source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+    )
+
+
+def _entry_transcript_source_jsonl(entry: dict) -> Path | None:
+    """Return the transcript source JSONL path for an entry, if present."""
+
+    if not isinstance(entry, dict):
+        return None
+    transcript = entry.get("transcript")
+    source_jsonl = transcript.get("source_jsonl") if isinstance(transcript, dict) else None
+    if not isinstance(source_jsonl, str) or not source_jsonl.strip():
+        return None
+    return Path(source_jsonl).expanduser()
+
+
+def _canonical_session_identity_from_transcript(
+    *,
+    tool: str,
+    start: str,
+    end: str,
+    source_jsonl: str | Path | None,
+    source_match_json: str | Path | None,
+) -> dict | None:
+    if not isinstance(tool, str) or not tool.strip():
+        return None
+    if not isinstance(start, str) or not start.strip():
+        return None
+    if not isinstance(end, str) or not end.strip():
+        return None
+
+    native_source_path = _native_source_path_from_match_metadata(source_match_json)
+    if native_source_path is None:
+        if not isinstance(source_jsonl, (str, Path)) or not str(source_jsonl).strip():
+            return None
+        native_source_path = _resolve_native_source_path_from_transcript(
+            tool=tool,
+            source_jsonl=Path(source_jsonl),
+            start=start,
+            end=end,
+        )
+
+    return _canonical_session_identity_for_source(
+        tool=tool,
+        source_jsonl=native_source_path,
+        start=start,
+        end=end,
+    )
+
+
+def _native_source_path_from_match_metadata(source_match_json: str | Path | None) -> Path | None:
+    if not isinstance(source_match_json, (str, Path)):
+        return None
+    match_path = Path(source_match_json).expanduser()
+    if not str(match_path).strip() or not match_path.exists():
+        return None
+    try:
+        data = json.loads(match_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    best = data.get("best") if isinstance(data, dict) else None
+    best_path = best.get("path") if isinstance(best, dict) else None
+    if not isinstance(best_path, str) or not best_path.strip():
+        return None
+    return Path(best_path).expanduser().resolve()
+
+
+def _resolve_native_source_path_from_transcript(*, tool: str, source_jsonl: Path, start: str, end: str) -> Path:
+    source_path = Path(source_jsonl).expanduser().resolve()
+    normalized_tool = (tool or "").strip().lower()
+    if normalized_tool not in {"codex", "claude"}:
+        return source_path
+
+    if normalized_tool == "codex":
+        _, _, _, transcript_session_id = _codex_rollout_session_times(source_path)
+    else:
+        _, _, _, transcript_session_id = _claude_session_times(source_path)
+
+    start_dt = _parse_iso8601(start)
+    end_dt = _parse_iso8601(end)
+    if start_dt is None or end_dt is None:
+        return source_path
+
+    discover_native_sessions = _discover_native_sessions
+    module_override = sys.modules.get("ai_code_sessions")
+    if module_override is not None:
+        discover_native_sessions = getattr(module_override, "_discover_native_sessions", discover_native_sessions)
+
+    try:
+        candidates = discover_native_sessions(tools=(normalized_tool,), since=start_dt, until=end_dt)
+    except Exception:
+        return source_path
+
+    target_session_id = transcript_session_id.strip() if isinstance(transcript_session_id, str) else None
+    canonical_start = _canonicalize_iso8601_utc(start)
+    canonical_end = _canonicalize_iso8601_utc(end)
+    matches: list[Path] = []
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_path = candidate.get("source_jsonl")
+        if not isinstance(candidate_path, str) or not candidate_path.strip():
+            continue
+
+        candidate_session_id = candidate.get("session_id")
+        if target_session_id and isinstance(candidate_session_id, str) and candidate_session_id == target_session_id:
+            matches.append(Path(candidate_path).expanduser().resolve())
+            continue
+
+        candidate_start = candidate.get("start")
+        candidate_end = candidate.get("end")
+        if (
+            canonical_start
+            and canonical_end
+            and isinstance(candidate_start, str)
+            and isinstance(candidate_end, str)
+            and _canonicalize_iso8601_utc(candidate_start) == canonical_start
+            and _canonicalize_iso8601_utc(candidate_end) == canonical_end
+        ):
+            matches.append(Path(candidate_path).expanduser().resolve())
+
+    if not matches:
+        return source_path
+    if len(matches) == 1:
+        return matches[0]
+    if source_path in matches:
+        return source_path
+    return matches[0]
+
+
+def _session_identity_key(identity: dict | None) -> tuple[str, str, str, str] | None:
+    if not isinstance(identity, dict):
+        return None
+    tool = identity.get("tool")
+    native_source_path = identity.get("native_source_path")
+    start = identity.get("start")
+    end = identity.get("end")
+    if not all(isinstance(value, str) and value.strip() for value in (tool, native_source_path, start, end)):
+        return None
+    return tool, native_source_path, start, end
 
 
 def _looks_truncated(text: str) -> bool:
@@ -1169,6 +1454,82 @@ def _load_existing_run_ids(entries_path: Path) -> set[str]:
     except OSError:
         return run_ids
     return run_ids
+
+
+def _load_existing_session_identity_keys(entries_path: Path) -> set[tuple[str, str, str, str]]:
+    identities: set[tuple[str, str, str, str]] = set()
+    if not entries_path.exists():
+        return identities
+    try:
+        with _JSONL_IO_LOCK:
+            with open(entries_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    identity_key = _session_identity_key(_entry_session_identity(obj))
+                    if identity_key is not None:
+                        identities.add(identity_key)
+    except OSError:
+        return identities
+    return identities
+
+
+def _preview_changelog_append_status(
+    *,
+    tool: str,
+    project_root: Path,
+    session_dir: Path,
+    start: str,
+    end: str,
+    source_jsonl: Path,
+    source_match_json: Path | None,
+    actor: str | None = None,
+) -> tuple[str | None, str]:
+    changelog_dir = project_root / ".changelog"
+    actor_value = actor or _detect_actor(project_root=project_root)
+    actor_slug = _slugify_actor(actor_value)
+    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
+    session_dir_abs = session_dir.resolve()
+    run_id = _compute_run_id(
+        tool=tool,
+        start=start,
+        end=end,
+        session_dir=session_dir_abs,
+        source_jsonl=source_jsonl,
+    )
+    source_identity = _canonical_session_identity_from_transcript(
+        tool=tool,
+        start=start,
+        end=end,
+        source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+    ) or _canonical_session_identity_for_source(
+        tool=tool,
+        source_jsonl=source_jsonl,
+        start=start,
+        end=end,
+    )
+    source_identity_key = _session_identity_key(source_identity)
+
+    entry_paths = (
+        entries_path,
+        changelog_dir / "entries.jsonl",
+        changelog_dir / "actors" / actor_slug / "entries.jsonl",
+    )
+    existing = (
+        _load_existing_run_ids(entries_path)
+        | _load_existing_run_ids(changelog_dir / "entries.jsonl")
+        | _load_existing_run_ids(changelog_dir / "actors" / actor_slug / "entries.jsonl")
+    )
+    existing_identity_keys = set().union(*(_load_existing_session_identity_keys(path) for path in entry_paths))
+    if run_id in existing or (source_identity_key is not None and source_identity_key in existing_identity_keys):
+        return run_id, "exists"
+    return run_id, "appended"
 
 
 def _parse_relative_date(ref: str) -> datetime | None:
@@ -2798,7 +3159,7 @@ def _generate_and_append_changelog_entry(
     start: str,
     end: str,
     source_jsonl: Path,
-    source_match_json: Path,
+    source_match_json: Path | None,
     prior_prompts: int = 3,
     actor: str | None = None,
     evaluator: str = "codex",
@@ -2806,29 +3167,39 @@ def _generate_and_append_changelog_entry(
     claude_max_thinking_tokens: int | None = None,
     continuation_of_run_id: str | None = None,
     halt_on_429: bool = False,
+    transcript_output_dir: Path | None | object = _AUTO_CHANGELOG_TRANSCRIPT_FIELD,
+    transcript_index_html: Path | None | object = _AUTO_CHANGELOG_TRANSCRIPT_FIELD,
 ) -> tuple[bool, str | None, str]:
-    changelog_dir = project_root / ".changelog"
-
     project = project_root.name or str(project_root)
     actor_value = actor or _detect_actor(project_root=project_root)
-    actor_slug = _slugify_actor(actor_value)
-    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
     session_dir_abs = session_dir.resolve()
-    run_id = _compute_run_id(
+    run_id, preview_status = _preview_changelog_append_status(
+        tool=tool,
+        project_root=project_root,
+        session_dir=session_dir_abs,
+        start=start,
+        end=end,
+        source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+        actor=actor_value,
+    )
+    if preview_status == "exists":
+        return False, run_id, "exists"
+
+    changelog_dir = project_root / ".changelog"
+    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
+    source_identity = _canonical_session_identity_from_transcript(
         tool=tool,
         start=start,
         end=end,
-        session_dir=session_dir_abs,
         source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+    ) or _canonical_session_identity_for_source(
+        tool=tool,
+        source_jsonl=source_jsonl,
+        start=start,
+        end=end,
     )
-
-    existing = (
-        _load_existing_run_ids(entries_path)
-        | _load_existing_run_ids(changelog_dir / "entries.jsonl")
-        | _load_existing_run_ids(changelog_dir / "actors" / actor_slug / "entries.jsonl")
-    )
-    if run_id in existing:
-        return False, run_id, "exists"
 
     try:
         module_override = sys.modules.get("ai_code_sessions")
@@ -2918,11 +3289,23 @@ def _generate_and_append_changelog_entry(
         created_at_dt = _parse_iso8601(start) or _parse_iso8601(end)
         created_at = created_at_dt.isoformat() if created_at_dt else _now_iso8601()
 
-        index_html_path = session_dir_abs / "index.html"
-        if not index_html_path.exists():
-            trace_path = session_dir_abs / "trace.html"
-            if trace_path.exists():
-                index_html_path = trace_path
+        output_dir_value = (
+            str(session_dir_abs)
+            if transcript_output_dir is _AUTO_CHANGELOG_TRANSCRIPT_FIELD
+            else (str(Path(transcript_output_dir).expanduser().resolve()) if transcript_output_dir else None)
+        )
+        if transcript_index_html is _AUTO_CHANGELOG_TRANSCRIPT_FIELD:
+            index_html_path = session_dir_abs / "index.html"
+            if not index_html_path.exists():
+                trace_path = session_dir_abs / "trace.html"
+                if trace_path.exists():
+                    index_html_path = trace_path
+            index_html_value = str(index_html_path.resolve())
+        else:
+            index_html_value = (
+                str(Path(transcript_index_html).expanduser().resolve()) if transcript_index_html else None
+            )
+        source_match_value = str(Path(source_match_json).expanduser().resolve()) if source_match_json else None
 
         entry = {
             "schema_version": CHANGELOG_ENTRY_SCHEMA_VERSION,
@@ -2938,10 +3321,14 @@ def _generate_and_append_changelog_entry(
             "session_dir": str(session_dir_abs),
             "continuation_of_run_id": continuation_of_run_id,
             "transcript": {
-                "output_dir": str(session_dir_abs),
-                "index_html": str(index_html_path.resolve()),
-                "source_jsonl": str(source_jsonl),
-                "source_match_json": str(source_match_json),
+                "output_dir": output_dir_value,
+                "index_html": index_html_value,
+                "source_jsonl": str(Path(source_jsonl).expanduser().resolve()),
+                "source_match_json": source_match_value,
+            },
+            "source": {
+                "kind": "native_session",
+                "identity": source_identity,
             },
             "summary": _sanitize_changelog_text(summary.strip()),
             "bullets": [_sanitize_changelog_text(str(b).strip()) for b in bullets if str(b).strip()][:12],
@@ -3743,6 +4130,286 @@ def _claude_session_times(filepath: Path):
 
 def _clamp_dt(value, fallback):
     return value if value is not None else fallback
+
+
+def _normalized_native_session_window(*, since: datetime, until: datetime) -> tuple[datetime, datetime]:
+    if since <= until:
+        return since, until
+    return until, since
+
+
+def _native_session_overlaps_window(
+    *,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    since: datetime,
+    until: datetime,
+) -> bool:
+    effective_start = start_dt or end_dt
+    effective_end = end_dt or start_dt
+    if effective_start is None or effective_end is None:
+        return False
+    return effective_start <= until and effective_end >= since
+
+
+def _native_session_prompt_summary(source_jsonl: Path) -> str:
+    summary = get_session_summary(source_jsonl)
+    return summary if summary and summary != "(no summary)" else ""
+
+
+def _build_native_session_candidate(
+    *,
+    tool: str,
+    source_jsonl: Path,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    cwd: str | None,
+    session_id: str | None,
+    project_hints: list[dict] | None = None,
+) -> dict | None:
+    effective_start = start_dt or end_dt
+    effective_end = end_dt or start_dt
+    if effective_start is None or effective_end is None:
+        return None
+    if effective_start > effective_end:
+        effective_start = effective_end
+
+    source_path = Path(source_jsonl).expanduser().resolve()
+    start_value = effective_start.astimezone(timezone.utc).isoformat()
+    end_value = effective_end.astimezone(timezone.utc).isoformat()
+
+    cwd_value = None
+    if isinstance(cwd, str) and cwd.strip():
+        cwd_value = str(Path(cwd).expanduser().resolve())
+
+    summary = _native_session_prompt_summary(source_path)
+    return {
+        "tool": tool,
+        "source_jsonl": str(source_path),
+        "start": start_value,
+        "end": end_value,
+        "session_id": session_id,
+        "cwd": cwd_value,
+        "prompt_summary": summary,
+        "project_hints": list(project_hints or []),
+        "source": {
+            "kind": "native_session",
+            "identity": _canonical_session_identity_for_source(
+                tool=tool,
+                source_jsonl=source_path,
+                start=start_value,
+                end=end_value,
+            ),
+        },
+    }
+
+
+def _candidate_codex_day_dirs_for_window(sessions_base: Path, since: datetime, until: datetime) -> list[Path]:
+    start_local = since.astimezone().date() - timedelta(days=1)
+    end_local = until.astimezone().date() + timedelta(days=1)
+    day_count = (end_local - start_local).days
+    return [
+        sessions_base
+        / f"{(start_local + timedelta(days=offset)).year:04d}"
+        / f"{(start_local + timedelta(days=offset)).month:02d}"
+        / f"{(start_local + timedelta(days=offset)).day:02d}"
+        for offset in range(day_count + 1)
+    ]
+
+
+def _discover_native_codex_sessions(*, since: datetime, until: datetime) -> list[dict]:
+    since, until = _normalized_native_session_window(since=since, until=until)
+    base = _user_codex_sessions_dir()
+    if not base.exists():
+        return []
+
+    candidates: list[dict] = []
+    seen_paths: set[Path] = set()
+    day_dirs = _candidate_codex_day_dirs_for_window(base, since, until)
+
+    for day_dir in day_dirs:
+        if not day_dir.exists():
+            continue
+        for path in sorted(day_dir.glob("rollout-*.jsonl")):
+            resolved_path = path.resolve()
+            if resolved_path in seen_paths:
+                continue
+            seen_paths.add(resolved_path)
+            start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(resolved_path)
+            if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
+                continue
+            candidate = _build_native_session_candidate(
+                tool="codex",
+                source_jsonl=resolved_path,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                cwd=cwd,
+                session_id=session_id,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return candidates
+
+
+def _discover_native_claude_sessions(*, since: datetime, until: datetime) -> list[dict]:
+    since, until = _normalized_native_session_window(since=since, until=until)
+    base = Path.home() / ".claude" / "projects"
+    if not base.exists():
+        return []
+
+    candidates: list[dict] = []
+    for project_dir in sorted([path for path in base.iterdir() if path.is_dir()]):
+        for path in sorted(project_dir.glob("*.jsonl")):
+            if path.name.startswith("agent-"):
+                continue
+            resolved_path = path.resolve()
+            start_dt, end_dt, cwd, session_id = _claude_session_times(resolved_path)
+            if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
+                continue
+            candidate = _build_native_session_candidate(
+                tool="claude",
+                source_jsonl=resolved_path,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                cwd=cwd,
+                session_id=session_id,
+                project_hints=[{"kind": "claude_project_dir", "value": project_dir.name}],
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return candidates
+
+
+def _discover_native_sessions(*, tools: tuple[str, ...], since: datetime, until: datetime) -> list[dict]:
+    since, until = _normalized_native_session_window(since=since, until=until)
+    requested_tools = []
+    for tool in tools:
+        normalized = (tool or "").strip().lower()
+        if normalized in {"codex", "claude"} and normalized not in requested_tools:
+            requested_tools.append(normalized)
+
+    candidates: list[dict] = []
+    if "codex" in requested_tools:
+        candidates.extend(_discover_native_codex_sessions(since=since, until=until))
+    if "claude" in requested_tools:
+        candidates.extend(_discover_native_claude_sessions(since=since, until=until))
+
+    candidates.sort(
+        key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return candidates
+
+
+def _normalize_project_hints(candidate: dict) -> list[dict]:
+    hints = candidate.get("project_hints")
+    if not isinstance(hints, list):
+        return []
+    normalized: list[dict] = []
+    for hint in hints:
+        if isinstance(hint, dict):
+            normalized.append(dict(hint))
+        elif isinstance(hint, str) and hint.strip():
+            normalized.append({"kind": "hint", "value": hint.strip()})
+    return normalized
+
+
+def _resolve_native_session_project(candidate: dict) -> dict:
+    tool = (candidate.get("tool") or "").strip().lower() if isinstance(candidate, dict) else ""
+    source_jsonl = candidate.get("source_jsonl") if isinstance(candidate, dict) else None
+    session_id = candidate.get("session_id") if isinstance(candidate, dict) else None
+    start = candidate.get("start") if isinstance(candidate, dict) else None
+    end = candidate.get("end") if isinstance(candidate, dict) else None
+    prompt_summary = candidate.get("prompt_summary") if isinstance(candidate, dict) else None
+    cwd = candidate.get("cwd") if isinstance(candidate, dict) else None
+
+    source_value = None
+    if isinstance(source_jsonl, (str, Path)):
+        source_value = str(Path(source_jsonl).expanduser().resolve())
+
+    cwd_value = None
+    git_toplevel = None
+    if isinstance(cwd, str) and cwd.strip():
+        cwd_path = Path(cwd).expanduser().resolve()
+        cwd_value = str(cwd_path)
+        top = _git_toplevel(cwd_path)
+        if top is not None:
+            git_toplevel = str(Path(top).expanduser().resolve())
+
+    project_hints = _normalize_project_hints(candidate)
+    plausible_project_roots: list[str] = []
+    if git_toplevel is not None:
+        plausible_project_roots.append(git_toplevel)
+
+    for key in ("project_root", "project_root_hint"):
+        value = candidate.get(key) if isinstance(candidate, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            continue
+        hinted_top = _git_toplevel(Path(value).expanduser().resolve())
+        if hinted_top is None:
+            continue
+        hinted_value = str(Path(hinted_top).expanduser().resolve())
+        if hinted_value not in plausible_project_roots:
+            plausible_project_roots.append(hinted_value)
+
+    conflicts: list[str] = []
+    if len(plausible_project_roots) > 1:
+        conflicts.append("Multiple plausible git toplevels were derived from session evidence")
+
+    evidence = {
+        "tool": tool,
+        "source_jsonl": source_value,
+        "session_id": session_id,
+        "start": _canonicalize_iso8601_utc(start) if isinstance(start, str) else start,
+        "end": _canonicalize_iso8601_utc(end) if isinstance(end, str) else end,
+        "cwd": cwd_value,
+        "git_toplevel": git_toplevel,
+        "prompt_summary": prompt_summary,
+        "project_hints": project_hints,
+        "plausible_project_roots": plausible_project_roots,
+        "conflicts": conflicts,
+    }
+
+    if git_toplevel is not None and not conflicts:
+        return {
+            "project_root": git_toplevel,
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": evidence,
+        }
+
+    if conflicts:
+        return {
+            "project_root": None,
+            "confidence": "medium",
+            "reason": "Multiple plausible repos found; user selection is required",
+            "evidence": evidence,
+        }
+
+    if plausible_project_roots:
+        return {
+            "project_root": None,
+            "confidence": "medium",
+            "reason": "Repo evidence is plausible but not strong enough for automatic writes",
+            "evidence": evidence,
+        }
+
+    return {
+        "project_root": None,
+        "confidence": "low",
+        "reason": "No trustworthy repo evidence found",
+        "evidence": evidence,
+    }
 
 
 def find_best_source_file(*, tool: str, cwd: str, project_root: str, start: str, end: str):

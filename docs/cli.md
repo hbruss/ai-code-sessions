@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `ai-code-sessions` CLI converts native AI session logs into clean, mobile-friendly HTML transcripts with pagination.
+The `ai-code-sessions` CLI syncs recent native AI sessions into per-repo changelogs and can also convert native session logs into clean, mobile-friendly HTML transcripts with pagination.
 
 ## Command Names
 
@@ -122,9 +122,9 @@ Right now the shipped skill is `changelog`.
 
 ### `ais ctx`
 
-Start a labeled AI coding session with automatic transcript export when you finish.
+Optional convenience wrapper for a labeled AI coding session with automatic transcript export when you finish.
 
-**This is the recommended way to use this tool.** It wraps Codex or Claude, preserving all terminal colors and interactivity.
+Use this when you want managed transcript export and resume behavior in the repo. If you only want changelog entries, use your AI CLI normally and run `ais changelog sync` afterward.
 
 ```bash
 ais ctx "Your descriptive label" --codex
@@ -456,6 +456,54 @@ ais changelog backfill --limit 5 --max-concurrency 1
 - If `export_runs.jsonl` exists in a session directory, backfill can generate **delta-only** entries for resumed sessions
 - Without it, backfill creates a single entry per session directory
 - If the evaluator hits rate limits (`HTTP 429`), backfill halts early so you can retry later
+
+---
+
+### `ais changelog sync`
+
+Sync recent native Codex and Claude sessions into per-repo changelog entries.
+
+This is the primary changelog workflow. By default it scans the last 48 hours, writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
+
+**Usage:**
+
+```bash
+ais changelog sync --codex
+ais changelog sync --all --since "7 days ago"
+ais changelog sync --claude --dry-run
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--codex` | Sync native Codex sessions only |
+| `--claude` | Sync native Claude sessions only |
+| `--all` | Sync both tools (default) |
+| `--since TEXT` | Start of the scan window (defaults to 48 hours before `--until`/now) |
+| `--until TEXT` | End of the scan window (defaults to now) |
+| `--limit INTEGER` | Maximum number of discovered sessions to consider (when `--project-root` is set, the limit applies after repo filtering) |
+| `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
+| `--dry-run` | Show what would be appended without writing |
+| `--actor TEXT` | Override the changelog actor |
+| `--evaluator [codex|claude]` | Changelog evaluator to use (default: `codex`) |
+| `--model TEXT` | Model override for the evaluator |
+
+**Examples:**
+
+```bash
+# Default recent-session sync
+ais changelog sync --codex
+
+# Scan a larger window
+ais changelog sync --all --since "7 days ago"
+
+# Limit writes to the current repo
+ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)"
+
+# Preview before writing
+ais changelog sync --all --dry-run
+```
 
 ---
 

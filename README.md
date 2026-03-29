@@ -10,6 +10,7 @@
 - [The Problem Worth Solving](#the-problem-worth-solving)
 - [What You Get](#what-you-get)
 - [Quick Start](#quick-start)
+- [The Normal Workflow](#the-normal-workflow)
 - [The `ais ctx` Workflow](#the-ais-ctx-workflow)
 - [The Changelog System](#the-changelog-system)
 - [CLI Reference](#cli-reference)
@@ -30,7 +31,8 @@ What I've added on top:
 
 - **Codex CLI support** (in addition to Claude Code)
 - **Automatic source matching** for finding the right log file when running concurrent sessions
-- **An `ais ctx` workflow** for naming sessions and organizing exports by project
+- **A native changelog sync workflow** for processing recent Codex and Claude sessions without wrapping them
+- **An optional `ais ctx` workflow** for naming sessions and organizing transcript exports by project
 - **An append-only changelog system** for generating structured summaries
 - **An interactive onboarding wizard** for workflow setup, readiness checks, and manual skill-install guidance
 
@@ -141,35 +143,68 @@ test -f ~/.claude/skills/changelog/SKILL.md
 
 Detailed instructions for Codex user-wide, Codex project-local, Claude user-wide, Claude project-local, and Windows PowerShell installs live in [`docs/skills.md`](docs/skills.md).
 
-### 4. Start Your First Session
+### 4. Run Your Session Normally
 
 ```bash
-# With Codex
+# Use Codex or Claude directly
+codex
+claude
+```
+
+### 5. Sync the Changelog
+
+```bash
+# Sync recent Codex sessions from the last 48 hours
+ais changelog sync --codex
+
+# Preview Claude sessions without writing
+ais changelog sync --claude --dry-run
+```
+
+If repo targeting is ambiguous, `ais` prompts you to choose the correct project before it writes anything.
+
+### 6. Export HTML When You Want It
+
+```bash
+# Optional convenience wrapper for automatic transcript export
 ais ctx "Fix the login race condition" --codex
-
-# With Claude Code
-ais ctx "Add unit tests for auth module" --claude
 ```
 
-When you exit the AI tool (Ctrl+D or `/exit`), your session is automatically exported to:
-- `.codex/sessions/YYYY-MM-DD-HHMM_Your_Label/` (for Codex)
-- `.claude/sessions/YYYY-MM-DD-HHMM_Your_Label/` (for Claude)
+---
 
-### 5. View Your Transcript
+## The Normal Workflow
+
+`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan recent native session logs, resolve the correct repo, and append changelog entries only for sessions that have not already been recorded.
+
+### Basic Usage
 
 ```bash
-# macOS
-open .codex/sessions/*/index.html
+# Default: scan the last 48 hours
+ais changelog sync --codex
 
-# Linux
-xdg-open .codex/sessions/*/index.html
+# Scan both tools over a larger window
+ais changelog sync --all --since "7 days ago"
+
+# Preview actions without writing
+ais changelog sync --claude --dry-run
 ```
+
+### What It Does
+
+- Discovers recent native Codex and Claude sessions
+- Resolves the target git repo from session evidence
+- Prompts you when multiple repos are plausible
+- Reports ambiguous sessions as unresolved in non-interactive runs
+- Skips low-confidence sessions instead of guessing
+- Appends changelog entries only for sessions that are not already recorded
+
+Use [`docs/changelog.md`](docs/changelog.md) for the full changelog workflow and [`docs/cli.md`](docs/cli.md) for the complete flag reference.
 
 ---
 
 ## The `ais ctx` Workflow
 
-`ais ctx` is the recommended way to use this tool. It wraps the Codex or Claude CLI, preserving all terminal colors and interactivity, and automatically exports a transcript when you're done.
+`ais ctx` is now the optional convenience workflow. Use it when you want automatic HTML transcript export, session labels at launch time, and managed resume behavior in the repo. If you only want changelog entries, you can skip the wrapper and use `ais changelog sync` after the session ends.
 
 ### Basic Usage
 
@@ -222,7 +257,22 @@ After each session, you'll find:
 
 ## The Changelog System
 
-Beyond transcripts, `ai-code-sessions` can generate structured changelog entries after each session. These aren't commit messages—they're higher-level summaries of what an AI-assisted coding session actually accomplished.
+`ai-code-sessions` can generate structured changelog entries directly from recent native sessions or from exported transcript directories. These aren't commit messages; they're higher-level summaries of what an AI-assisted coding session actually accomplished.
+
+### Normal Usage
+
+```bash
+# Default: recent sessions from the last 48 hours
+ais changelog sync --codex
+
+# Sync both tools over a custom window
+ais changelog sync --all --since "7 days ago"
+
+# Restrict writes to one repo and preview the result
+ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
+```
+
+`ais changelog sync` is idempotent. You can run it after every session; it skips sessions that are already represented in the target repo's changelog.
 
 ### What Gets Captured
 
@@ -302,7 +352,7 @@ claude_thinking_tokens = 8192
 
 ### Backfilling Existing Sessions
 
-Generate changelog entries for sessions that were exported before you enabled changelogs:
+Generate changelog entries for historical transcript directories that were exported before you started using `ais changelog sync` or before changelog generation was enabled:
 
 ```bash
 # Backfill all sessions in current repo
@@ -346,7 +396,7 @@ ais skill path changelog
 
 ### `ais ctx`
 
-Start a labeled AI coding session with automatic transcript export.
+Optional convenience wrapper for a labeled AI coding session with automatic transcript export.
 
 ```bash
 ais ctx "My session label" --codex
@@ -411,6 +461,27 @@ ais export-latest \
   --json \
   --changelog
 ```
+
+### `ais changelog sync`
+
+Sync recent native Codex or Claude sessions into the correct repo changelog.
+
+```bash
+ais changelog sync --codex
+ais changelog sync --all --since "7 days ago"
+ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
+```
+
+| Option | Description |
+|--------|-------------|
+| `--codex`, `--claude`, `--all` | Select which native session stores to scan |
+| `--since`, `--until` | Define the scan window (`--since` defaults to 48 hours before `--until`/now) |
+| `--limit` | Limit the number of discovered sessions considered |
+| `--project-root` | Restrict writes to one repo; matching medium-confidence sessions do not prompt |
+| `--dry-run` | Show planned appends without writing |
+| `--actor` | Override changelog actor |
+| `--evaluator` | `codex` or `claude` (default: `codex`) |
+| `--model` | Model override for the evaluator |
 
 ### `ais changelog backfill`
 

@@ -1,6 +1,6 @@
 # Changelog Generation
 
-`ai-code-sessions` can automatically generate structured changelog entries after exporting a transcript. These aren't git commit messages—they're higher-level summaries of what an entire AI-assisted coding session accomplished.
+`ai-code-sessions` can generate structured changelog entries either from recent native Codex/Claude sessions or from exported transcript directories. These aren't git commit messages; they're higher-level summaries of what an entire AI-assisted coding session accomplished.
 
 ## Why Changelogs?
 
@@ -34,9 +34,10 @@ Each changelog entry includes:
 | `project_root` | Repo root path | `"$HOME/.../ai-code-sessions"` |
 | `label` | Session label | `"Code Review 1"` |
 | `start` / `end` | Session window | `"2026-01-04T10:07:18.024479+00:00"` |
-| `session_dir` | Output directory | `".../.codex/sessions/2026-01-04-0207_Code_Review_1"` |
+| `session_dir` | Session artifact directory used for changelog processing | `".../.codex/sessions/2026-01-04-0207_Code_Review_1"` |
 | `continuation_of_run_id` | Prior run when resuming | `"b1a2..."` or `null` |
 | `transcript` | Transcript paths | `{ "index_html": "...", "source_jsonl": "...", ... }` |
+| `source` | Canonical native-session identity | `{ "kind": "native_session", "identity": { ... } }` |
 | `summary` | One-line description | `"Fixed authentication race condition"` |
 | `bullets` | 3-12 specific accomplishments | `["Added mutex to token refresh", "Added retry logic", ...]` |
 | `tags` | Classification | `["fix", "auth"]` |
@@ -58,7 +59,7 @@ Each changelog entry includes:
     └── failures.jsonl   # Failed generation attempts (for debugging)
 ```
 
-### In Each Session Directory
+### In Each Transcript Directory
 
 ```
 .codex/sessions/2026-01-02-1435_My_Session/
@@ -69,7 +70,35 @@ Each changelog entry includes:
 
 ---
 
-## Enabling Changelog Generation
+## Primary Workflow: Sync Recent Native Sessions
+
+This is the normal post-session workflow:
+
+```bash
+# Sync recent Codex sessions from the last 48 hours
+ais changelog sync --codex
+
+# Scan both tools over a custom window
+ais changelog sync --all --since "7 days ago"
+
+# Preview what would be written
+ais changelog sync --claude --dry-run
+```
+
+Key behaviors:
+
+- The default scan window is the last 48 hours
+- `ais` writes only when repo targeting is high confidence
+- If multiple repos are plausible, `ais` prompts you to choose
+- In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
+- If repo evidence is too weak, the session is reported as unresolved and skipped
+- The command is idempotent, so you can run it after every session
+
+Sync-generated entries still include a `transcript` object, but `transcript.output_dir`, `transcript.index_html`, and `transcript.source_match_json` may be `null` when no HTML export exists yet. `transcript.source_jsonl` remains the required on-disk source of truth.
+
+---
+
+## Defaults and Configuration
 
 > **Note:** Changelog entries are **delta-aware** only when `export_runs.jsonl` exists in the session directory. This file is created by `ais ctx` and tracks each export window, enabling backfill to generate separate entries for resumed sessions instead of one big entry per directory.
 
@@ -193,7 +222,7 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 
 ## Backfilling Existing Sessions
 
-If you have session directories from before you enabled changelogs, you can generate entries retroactively:
+If you have exported session directories from before you started using `ais changelog sync`, you can generate entries retroactively:
 
 ### Basic Backfill
 

@@ -1,5 +1,7 @@
 """Tests for changelog validation functions."""
 
+import ai_code_sessions as core
+
 from ai_code_sessions.core import (
     _looks_truncated,
     _parse_relative_date,
@@ -285,3 +287,23 @@ class TestValidateChangelogEntry:
         result = _validate_changelog_entry(entry)
         assert result.valid is False
         assert any("not a string" in e.lower() for e in result.errors)
+
+
+def test_changelog_schema_allows_sync_entries_without_html_paths():
+    transcript_schema = core._CHANGELOG_ENTRY_SCHEMA["properties"]["transcript"]
+
+    assert transcript_schema["required"] == [
+        "output_dir",
+        "index_html",
+        "source_jsonl",
+        "source_match_json",
+    ]
+    assert transcript_schema["properties"]["output_dir"]["type"] == ["string", "null"]
+    assert transcript_schema["properties"]["index_html"]["type"] == ["string", "null"]
+    assert transcript_schema["properties"]["source_match_json"]["type"] == ["string", "null"]
+    assert transcript_schema["properties"]["source_jsonl"]["type"] == "string"
+    assert transcript_schema["properties"]["source_jsonl"]["minLength"] == 1
+
+    source_schema = core._CHANGELOG_ENTRY_SCHEMA["properties"]["source"]
+    assert source_schema["type"] == "object"
+    assert source_schema["properties"]["kind"]["const"] == "native_session"

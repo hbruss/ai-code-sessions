@@ -28,6 +28,21 @@ class _Answer:
         return self._value
 
 
+def test_changelog_sync_help_lists_expected_options():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--help"])
+
+    assert result.exit_code == 0
+    assert "--codex" in result.output
+    assert "--claude" in result.output
+    assert "--all" in result.output
+    assert "--since" in result.output
+    assert "--until" in result.output
+    assert "--limit" in result.output
+    assert "--project-root" in result.output
+    assert "--dry-run" in result.output
+
+
 def test_setup_writes_configs_and_gitignore(monkeypatch, tmp_path):
     packaged_skill = tmp_path / "packaged-skill" / "changelog"
     packaged_skill.mkdir(parents=True)

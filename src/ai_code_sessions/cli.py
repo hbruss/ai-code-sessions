@@ -10,7 +10,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,7 +33,9 @@ from .core import (
     _config_get,
     _derive_label_from_session_dir,
     _detect_actor,
+    _discover_native_sessions,
     _ensure_gitignore_ignores,
+    _entry_transcript_source_jsonl,
     _env_first,
     _env_truthy,
     _format_changelog_entries,
@@ -47,11 +49,13 @@ from .core import (
     _maybe_copy_native_jsonl_into_legacy_session_dir,
     _now_iso8601,
     _packaged_skill_path,
+    _preview_changelog_append_status,
     _read_jsonl_objects,
     _read_last_jsonl_object,
     _render_config_toml,
     _repo_config_path,
     _resolve_changelog_since_ref,
+    _resolve_native_session_project,
     _run_codex_changelog_evaluator,
     _sanitize_changelog_text,
     _slugify_actor,
@@ -1552,6 +1556,262 @@ def changelog_cli():
     pass
 
 
+def _resolve_changelog_sync_tools(*, tool_codex: bool, tool_claude: bool, tool_all: bool) -> tuple[str, ...]:
+    if tool_all or (not tool_codex and not tool_claude):
+        return ("codex", "claude")
+
+    tools: list[str] = []
+    if tool_codex:
+        tools.append("codex")
+    if tool_claude:
+        tools.append("claude")
+    return tuple(tools)
+
+
+def _resolve_changelog_sync_window(
+    *,
+    since_ref: str | None,
+    until_ref: str | None,
+    ref_root: Path,
+) -> tuple[datetime, datetime]:
+    until_dt = (
+        _resolve_changelog_since_ref(until_ref, project_root=ref_root) if until_ref else datetime.now(timezone.utc)
+    )
+    if since_ref:
+        since_dt = _resolve_changelog_since_ref(since_ref, project_root=ref_root)
+    else:
+        since_dt = until_dt - timedelta(hours=48)
+    return since_dt, until_dt
+
+
+def _changelog_sync_prompt_message(*, candidate: dict, roots: list[str]) -> str:
+    source_name = Path(str(candidate.get("source_jsonl", "session"))).name
+    prompt_summary = (candidate.get("prompt_summary") or "").strip()
+    summary_suffix = f" | {prompt_summary}" if prompt_summary else ""
+    return (
+        f"Select repo for {candidate.get('tool', 'unknown')} {source_name}"
+        f"{summary_suffix} ({len(roots)} plausible roots):"
+    )
+
+
+def _prompt_for_changelog_sync_root(*, candidate: dict, roots: list[str]) -> Path | None:
+    choices = [
+        questionary.Choice(title=f"{Path(root).name}  {root}", value=root)
+        for root in roots
+        if isinstance(root, str) and root.strip()
+    ]
+    if not choices:
+        return None
+    selected = questionary.select(
+        _changelog_sync_prompt_message(candidate=candidate, roots=roots), choices=choices
+    ).ask()
+    if selected is None:
+        return None
+    return Path(selected).expanduser().resolve()
+
+
+def _can_prompt_for_changelog_sync_root() -> bool:
+    stdin = click.get_text_stream("stdin")
+    stdout = click.get_text_stream("stdout")
+    stdin_isatty = getattr(stdin, "isatty", lambda: False)
+    stdout_isatty = getattr(stdout, "isatty", lambda: False)
+    return bool(stdin_isatty() and stdout_isatty())
+
+
+@changelog_cli.command("sync")
+@click.option("--codex", "tool_codex", is_flag=True, help="Sync native Codex sessions only.")
+@click.option("--claude", "tool_claude", is_flag=True, help="Sync native Claude sessions only.")
+@click.option("--all", "tool_all", is_flag=True, help="Sync both Codex and Claude sessions (default).")
+@click.option(
+    "--since",
+    default=None,
+    help="Start of the scan window (defaults to 48 hours before --until/now; accepts ISO dates, relative dates, or git refs).",
+)
+@click.option(
+    "--until",
+    default=None,
+    help="End of the scan window (defaults to now; accepts ISO dates, relative dates, or git refs).",
+)
+@click.option("--limit", type=int, help="Maximum number of native sessions to consider after discovery.")
+@click.option(
+    "--project-root",
+    help="Optional target repo root filter. Only sessions resolved to this repo will be processed.",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be appended without writing changelog entries.")
+@click.option("--actor", help="Override actor recorded in appended changelog entries.")
+@click.option(
+    "--evaluator",
+    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    default="codex",
+    show_default=True,
+    help="Which evaluator to use for changelog generation.",
+)
+@click.option("--model", help="Override model for the selected evaluator.")
+def changelog_sync_cmd(
+    tool_codex, tool_claude, tool_all, since, until, limit, project_root, dry_run, actor, evaluator, model
+):
+    """Sync recent native Codex/Claude sessions into per-repo changelog entries."""
+    if limit is not None and limit <= 0:
+        raise click.ClickException("--limit must be a positive integer")
+
+    requested_tools = _resolve_changelog_sync_tools(tool_codex=tool_codex, tool_claude=tool_claude, tool_all=tool_all)
+    scope_root = Path(project_root).resolve() if project_root else None
+    ref_root = scope_root or (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+    since_dt, until_dt = _resolve_changelog_sync_window(since_ref=since, until_ref=until, ref_root=ref_root)
+
+    candidates = _discover_native_sessions(tools=requested_tools, since=since_dt, until=until_dt)
+    if limit is not None and scope_root is None:
+        candidates = candidates[:limit]
+
+    evaluator_value = (evaluator or "codex").strip().lower()
+    claude_tokens = None
+    if evaluator_value == "claude":
+        raw_tokens = _env_first(
+            "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS",
+            "AI_CODE_SESSIONS_CHANGELOG_CLAUDE_THINKING_TOKENS",
+        )
+        if raw_tokens:
+            try:
+                claude_tokens = int(raw_tokens)
+            except ValueError:
+                raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)")
+            if claude_tokens <= 0:
+                raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
+
+    processed = 0
+    skipped = 0
+    unresolved = 0
+    failed = 0
+    scoped_candidates = 0
+
+    for candidate in candidates:
+        resolution = _resolve_native_session_project(candidate)
+        selected_root_value = resolution.get("project_root")
+        selected_root = (
+            Path(selected_root_value).expanduser().resolve()
+            if isinstance(selected_root_value, str) and selected_root_value.strip()
+            else None
+        )
+        confidence = str(resolution.get("confidence") or "low").strip().lower()
+        evidence = resolution.get("evidence") if isinstance(resolution.get("evidence"), dict) else {}
+        plausible_roots = [
+            root for root in evidence.get("plausible_project_roots", []) if isinstance(root, str) and root.strip()
+        ]
+        normalized_plausible_roots = {str(Path(root).expanduser().resolve()) for root in plausible_roots}
+        source_jsonl = Path(str(candidate["source_jsonl"])).expanduser().resolve()
+        source_name = source_jsonl.name
+
+        if confidence == "medium" and selected_root is not None:
+            normalized_selected_root = str(selected_root)
+            if normalized_selected_root not in normalized_plausible_roots:
+                plausible_roots.append(normalized_selected_root)
+                normalized_plausible_roots.add(normalized_selected_root)
+            selected_root = None
+
+        if scope_root is not None and confidence == "medium" and selected_root is None:
+            if str(scope_root) in normalized_plausible_roots:
+                selected_root = scope_root
+            else:
+                skipped += 1
+                click.echo(
+                    f"Sync: skipped {candidate.get('tool', 'unknown')} {source_name} "
+                    f"(explicit --project-root {scope_root} does not match plausible repos)"
+                )
+                continue
+
+        if confidence == "medium" and selected_root is None and plausible_roots:
+            if not _can_prompt_for_changelog_sync_root():
+                unresolved += 1
+                click.echo(
+                    f"Sync: unresolved {candidate.get('tool', 'unknown')} {source_name} "
+                    "(interactive repo selection required)"
+                )
+                continue
+            selected_root = _prompt_for_changelog_sync_root(candidate=candidate, roots=plausible_roots)
+
+        if selected_root is None:
+            unresolved += 1
+            click.echo(
+                f"Sync: unresolved {candidate.get('tool', 'unknown')} {source_name} ({resolution.get('reason') or 'no repo'})"
+            )
+            continue
+
+        if scope_root is not None and selected_root != scope_root:
+            skipped += 1
+            click.echo(f"Sync: skipped {candidate.get('tool', 'unknown')} {source_name} (resolved to {selected_root})")
+            continue
+
+        if scope_root is not None and limit is not None:
+            if scoped_candidates >= limit:
+                break
+            scoped_candidates += 1
+
+        label = (candidate.get("prompt_summary") or "").strip() or source_jsonl.stem
+        if dry_run:
+            run_id, preview_status = _preview_changelog_append_status(
+                tool=str(candidate.get("tool") or "unknown").strip().lower(),
+                project_root=selected_root,
+                session_dir=source_jsonl.parent.resolve(),
+                start=str(candidate.get("start") or ""),
+                end=str(candidate.get("end") or ""),
+                source_jsonl=source_jsonl,
+                source_match_json=None,
+                actor=actor,
+            )
+            if preview_status == "exists":
+                skipped += 1
+                click.echo(
+                    f"[DRY RUN] Sync: would skip existing run_id={run_id} "
+                    f"({candidate.get('tool', 'unknown')} {source_name})"
+                )
+                continue
+            processed += 1
+            click.echo(
+                f"[DRY RUN] Sync: would append run_id={run_id} "
+                f"({candidate.get('tool', 'unknown')} {source_name}) -> {selected_root}"
+            )
+            continue
+
+        appended, run_id, status = _generate_and_append_changelog_entry(
+            tool=str(candidate.get("tool") or "unknown").strip().lower(),
+            label=label,
+            cwd=str(selected_root),
+            project_root=selected_root,
+            session_dir=source_jsonl.parent.resolve(),
+            start=str(candidate.get("start") or ""),
+            end=str(candidate.get("end") or ""),
+            source_jsonl=source_jsonl,
+            source_match_json=None,
+            actor=actor,
+            evaluator=evaluator_value,
+            evaluator_model=model,
+            claude_max_thinking_tokens=claude_tokens,
+            transcript_output_dir=None,
+            transcript_index_html=None,
+        )
+        if appended and status == "appended":
+            processed += 1
+            click.echo(f"Sync: appended run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
+            continue
+        if status == "exists":
+            skipped += 1
+            click.echo(f"Sync: skipped existing run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
+            continue
+
+        failed += 1
+        click.echo(f"Sync: failed run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
+
+    if not candidates:
+        click.echo("Sync: no native sessions matched the requested window.")
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo()
+    click.echo(
+        f"{prefix}Summary: processed={processed} skipped={skipped} unresolved={unresolved}"
+        + (f" failed={failed}" if failed else "")
+    )
+
+
 @changelog_cli.command("backfill")
 @click.option(
     "--project-root",
@@ -2237,14 +2497,12 @@ def changelog_refresh_metadata_cmd(project_root, actor, only_empty, dry_run):
                 skipped_entries += 1
                 continue
 
-            transcript = entry.get("transcript", {})
-            source_jsonl = transcript.get("source_jsonl") if isinstance(transcript, dict) else None
-            if not isinstance(source_jsonl, str) or not source_jsonl.strip():
+            source_path = _entry_transcript_source_jsonl(entry)
+            if source_path is None:
                 failed_entries += 1
                 actor_failed += 1
                 continue
 
-            source_path = Path(source_jsonl).expanduser()
             if not source_path.exists():
                 failed_entries += 1
                 actor_failed += 1
@@ -2488,12 +2746,14 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
             keep_newline = raw_line.endswith("\n")
 
             # Check if source transcript exists
-            transcript = original_entry.get("transcript", {})
-            source_jsonl = transcript.get("source_jsonl")
-
-            if not source_jsonl or not Path(source_jsonl).exists():
+            source_path = _entry_transcript_source_jsonl(original_entry)
+            if source_path is None or not source_path.exists():
                 click.echo(
-                    click.style(f"  ✗ [{actor_name}:{line_num}] Source transcript not found: {source_jsonl}", fg="red")
+                    click.style(
+                        f"  ✗ [{actor_name}:{line_num}] Source transcript not found: "
+                        f"{source_path if source_path is not None else None}",
+                        fg="red",
+                    )
                 )
                 failed_count += 1
                 continue
@@ -2510,7 +2770,7 @@ def changelog_lint_cmd(project_root, actor, fix, evaluator, evaluator_model, ver
             try:
                 # Build digest from session
                 digest = _build_changelog_digest(
-                    source_jsonl=Path(source_jsonl),
+                    source_jsonl=source_path,
                     start=original_entry.get("start"),
                     end=original_entry.get("end"),
                 )

@@ -1,19 +1,29 @@
 # The `ais ctx` Workflow
 
-`ais ctx` is the recommended way to use `ai-code-sessions`. It runs Codex or Claude **normally** (preserving all terminal colors and interactivity), then automatically exports a browsable HTML transcript when you exit.
+`ais ctx` is the optional transcript-wrapper workflow. It runs Codex or Claude **normally** (preserving all terminal colors and interactivity), then automatically exports a browsable HTML transcript when you exit.
 
-## Why Use `ais ctx`?
+If you only want changelog entries, the normal workflow is to run Codex or Claude directly and then run `ais changelog sync`.
 
-Without `ais ctx`, you would need to:
+## When To Use `ais ctx`
 
-1. Run your AI tool (Codex or Claude)
-2. Note the start time
-3. Work on your task
-4. Note the end time
-5. Manually run `ais export-latest` with the correct timestamps
-6. Hope you got the right log file
+Use `ais ctx` when you want:
 
-With `ais ctx`, all of this happens automatically:
+1. Automatic HTML transcript export after each session
+2. A descriptive label captured at launch time
+3. Managed transcript resume behavior inside the repo
+4. Automatic archival copies of the native JSONL in the transcript directory
+
+If you do not need HTML output, you can skip the wrapper entirely:
+
+```bash
+# Run your native tool normally
+codex
+
+# Then sync changelog entries for recent sessions
+ais changelog sync --codex
+```
+
+With `ais ctx`, transcript export happens automatically:
 
 ```bash
 # Just add a label and the tool flag
