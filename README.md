@@ -88,13 +88,15 @@ The index page shows a timeline of every prompt in the session, with statistics:
 Open Terminal and run:
 
 ```bash
-# Install pipx if needed
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
-export PATH="$HOME/.local/bin:$PATH"
+# Install pipx
+brew install pipx
+pipx ensurepath
 
 # Install ai-code-sessions
-python3 -m pipx install ai-code-sessions
+pipx install ai-code-sessions
+
+# Update later
+pipx upgrade ai-code-sessions
 
 # Recommended helper tools for the shipped changelog skill
 brew install jq ripgrep
@@ -183,6 +185,9 @@ By default, changelog evaluation follows the normal evaluator precedence: explic
 ```bash
 # Default: scan the last 48 hours
 ais changelog sync --codex
+
+# Sync recent sessions for the current repo only
+ais changelog sync --codex --project-root "$PWD"
 
 # Scan both tools over a larger window
 ais changelog sync --all --since "7 days ago"

@@ -39,9 +39,15 @@ These flags can be used with any command:
 ### Using pipx (Recommended)
 
 ```bash
+# Install pipx on macOS if needed
+brew install pipx
+
 # Install globally in an isolated environment
 pipx install ai-code-sessions
 pipx ensurepath
+
+# Update later
+pipx upgrade ai-code-sessions
 
 # Verify installation
 ais --help
