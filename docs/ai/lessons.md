@@ -15,3 +15,8 @@
 - When a user says to ship an external skill bundle, do not assume only `SKILL.md` matters. Inspect and vendor the entire bundle from the source path they named, and preserve that original source path untouched unless they explicitly authorize changing it.
 - When adding packaged-resource tests, don’t stop at asserting files exist in the live source tree. Add at least one automated built-artifact check so wheel/sdist regressions are caught, and don’t assume `importlib.resources.files()` always maps to a real filesystem path.
 - When setup-time readiness checks call helpers that read config-backed command overrides, verify the preflight path is using the loaded existing config rather than a reduced write-only config payload like `cfg_out`.
+
+## 2026-03-29
+
+- When adding a new changelog workflow, do not assume evaluator-default behavior can diverge from existing `ctx`/export flows. If the product already supports config/env-driven evaluator defaults, every new changelog entrypoint must honor the same precedence unless the user explicitly asks for a different model.
+- When a setting can come from per-repo config, do not resolve it from the invocation context before the target repo is known. In multi-repo sync flows, derive repo-scoped config only after each session resolves to its destination project.

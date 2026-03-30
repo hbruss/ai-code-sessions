@@ -379,6 +379,225 @@ def test_changelog_sync_defaults_to_48_hours(monkeypatch, tmp_path):
     assert "processed=0" in result.output
 
 
+def test_changelog_sync_uses_env_evaluator_default_when_flag_omitted(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-env-default.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("CTX_CHANGELOG_EVALUATOR", "claude")
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-env-default",
+                "prompt_summary": "Use env evaluator default",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        },
+    )
+    captured = {}
+
+    def fake_generate_and_append(**kwargs):
+        captured.update(kwargs)
+        return True, "run-env-default", "appended"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--codex"])
+
+    assert result.exit_code == 0
+    assert captured["evaluator"] == "claude"
+    assert "processed=1" in result.output
+
+
+def test_changelog_sync_uses_config_evaluator_default_when_flag_omitted(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-config-default.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
+
+    monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
+    monkeypatch.delenv("CTX_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-config-default",
+                "prompt_summary": "Use config evaluator default",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        },
+    )
+    captured = {}
+
+    def fake_generate_and_append(**kwargs):
+        captured.update(kwargs)
+        return True, "run-config-default", "appended"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--codex", "--project-root", str(repo_root)])
+
+    assert result.exit_code == 0
+    assert captured["evaluator"] == "claude"
+    assert "processed=1" in result.output
+
+
+def test_changelog_sync_uses_each_resolved_repo_config_when_project_root_is_omitted(monkeypatch, tmp_path):
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    (repo_a / ".ai-code-sessions.toml").write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
+    (repo_b / ".ai-code-sessions.toml").write_text('[changelog]\nevaluator = "codex"\n', encoding="utf-8")
+    source_a = tmp_path / "rollout-repo-a.jsonl"
+    source_b = tmp_path / "rollout-repo-b.jsonl"
+    source_a.write_text("{}", encoding="utf-8")
+    source_b.write_text("{}", encoding="utf-8")
+
+    monkeypatch.delenv("AI_CODE_SESSIONS_CONFIG", raising=False)
+    monkeypatch.delenv("CTX_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_a),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-repo-a",
+                "prompt_summary": "Use repo A config",
+            },
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_b),
+                "start": "2026-01-01T01:00:00+00:00",
+                "end": "2026-01-01T01:05:00+00:00",
+                "session_id": "codex-repo-b",
+                "prompt_summary": "Use repo B config",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda candidate: {
+            "project_root": str(repo_a if Path(candidate["source_jsonl"]) == source_a else repo_b),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {
+                "plausible_project_roots": [str(repo_a if Path(candidate["source_jsonl"]) == source_a else repo_b)]
+            },
+        },
+    )
+    captured = []
+
+    def fake_generate_and_append(**kwargs):
+        captured.append({"project_root": str(kwargs["project_root"]), "evaluator": kwargs["evaluator"]})
+        return True, f"run-{len(captured)}", "appended"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--codex"])
+
+    assert result.exit_code == 0
+    assert captured == [
+        {"project_root": str(repo_a), "evaluator": "claude"},
+        {"project_root": str(repo_b), "evaluator": "codex"},
+    ]
+    assert "processed=2" in result.output
+
+
+def test_changelog_sync_explicit_evaluator_overrides_env_and_config(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-explicit-evaluator.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
+
+    monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
+    monkeypatch.setenv("CTX_CHANGELOG_EVALUATOR", "claude")
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-explicit-evaluator",
+                "prompt_summary": "Use explicit evaluator",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        },
+    )
+    captured = {}
+
+    def fake_generate_and_append(**kwargs):
+        captured.update(kwargs)
+        return True, "run-explicit-evaluator", "appended"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--codex", "--project-root", str(repo_root), "--evaluator", "codex"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["evaluator"] == "codex"
+    assert "processed=1" in result.output
+
+
 def test_changelog_sync_prompts_for_medium_confidence(monkeypatch, tmp_path):
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"

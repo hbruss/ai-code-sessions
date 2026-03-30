@@ -1642,9 +1642,13 @@ def _can_prompt_for_changelog_sync_root() -> bool:
 @click.option(
     "--evaluator",
     type=click.Choice(["codex", "claude"], case_sensitive=False),
-    default="codex",
-    show_default=True,
-    help="Which evaluator to use for changelog generation.",
+    default=None,
+    show_default="env/config/codex",
+    help=(
+        "Which evaluator to use for changelog generation "
+        "(defaults to env CTX_CHANGELOG_EVALUATOR / AI_CODE_SESSIONS_CHANGELOG_EVALUATOR, "
+        "then config changelog.evaluator, then codex)."
+    ),
 )
 @click.option("--model", help="Override model for the selected evaluator.")
 def changelog_sync_cmd(
@@ -1663,20 +1667,47 @@ def changelog_sync_cmd(
     if limit is not None and scope_root is None:
         candidates = candidates[:limit]
 
-    evaluator_value = (evaluator or "codex").strip().lower()
-    claude_tokens = None
-    if evaluator_value == "claude":
+    explicit_evaluator = (evaluator or "").strip().lower()
+    env_evaluator = (
+        (_env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or "").strip()
+    ).lower()
+    evaluator_cache: dict[Path, str] = {}
+    claude_tokens_loaded = False
+    claude_tokens_value: int | None = None
+
+    def _resolve_sync_evaluator(target_root: Path) -> str:
+        if explicit_evaluator:
+            return explicit_evaluator
+        if env_evaluator:
+            return env_evaluator
+        cached = evaluator_cache.get(target_root)
+        if cached is not None:
+            return cached
+        cfg = _load_config(project_root=target_root)
+        cfg_evaluator = _config_get(cfg, "changelog.evaluator")
+        resolved = (
+            cfg_evaluator.strip().lower() if isinstance(cfg_evaluator, str) and cfg_evaluator.strip() else "codex"
+        )
+        evaluator_cache[target_root] = resolved
+        return resolved
+
+    def _resolve_claude_tokens() -> int | None:
+        nonlocal claude_tokens_loaded, claude_tokens_value
+        if claude_tokens_loaded:
+            return claude_tokens_value
+        claude_tokens_loaded = True
         raw_tokens = _env_first(
             "CTX_CHANGELOG_CLAUDE_THINKING_TOKENS",
             "AI_CODE_SESSIONS_CHANGELOG_CLAUDE_THINKING_TOKENS",
         )
         if raw_tokens:
             try:
-                claude_tokens = int(raw_tokens)
+                claude_tokens_value = int(raw_tokens)
             except ValueError:
                 raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be an integer (or unset)")
-            if claude_tokens <= 0:
+            if claude_tokens_value <= 0:
                 raise click.ClickException("CTX_CHANGELOG_CLAUDE_THINKING_TOKENS must be a positive integer")
+        return claude_tokens_value
 
     processed = 0
     skipped = 0
@@ -1772,6 +1803,8 @@ def changelog_sync_cmd(
             )
             continue
 
+        evaluator_value = _resolve_sync_evaluator(selected_root)
+        claude_tokens = _resolve_claude_tokens() if evaluator_value == "claude" else None
         appended, run_id, status = _generate_and_append_changelog_entry(
             tool=str(candidate.get("tool") or "unknown").strip().lower(),
             label=label,

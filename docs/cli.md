@@ -465,6 +465,8 @@ Sync recent native Codex and Claude sessions into per-repo changelog entries.
 
 This is the primary changelog workflow. By default it scans the last 48 hours, writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
 
+Evaluator selection follows the same precedence as the managed `ctx` workflow: explicit `--evaluator`, then `CTX_CHANGELOG_EVALUATOR` / `AI_CODE_SESSIONS_CHANGELOG_EVALUATOR`, then config `changelog.evaluator`, then `codex`.
+
 **Usage:**
 
 ```bash
@@ -486,7 +488,7 @@ ais changelog sync --claude --dry-run
 | `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
 | `--dry-run` | Show what would be appended without writing |
 | `--actor TEXT` | Override the changelog actor |
-| `--evaluator [codex|claude]` | Changelog evaluator to use (default: `codex`) |
+| `--evaluator [codex|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
 | `--model TEXT` | Model override for the evaluator |
 
 **Examples:**
