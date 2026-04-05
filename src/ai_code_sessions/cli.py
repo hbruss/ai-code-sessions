@@ -22,13 +22,16 @@ import questionary
 from .core import (
     CSS,
     JS,
+    _JSONL_IO_LOCK,
     _append_jsonl,
     _append_log_line,
     _backfill_log_path,
     _build_changelog_digest,
     _choose_copied_jsonl_for_session_dir,
     _claude_session_times,
+    _canonicalize_iso8601_utc,
     _codex_rollout_session_times,
+    _changelog_paths,
     _collect_repo_sessions,
     _config_get,
     _derive_label_from_session_dir,
@@ -40,11 +43,14 @@ from .core import (
     _env_truthy,
     _format_changelog_entries,
     _format_local_dt,
+    _find_existing_entry_by_run_id,
     _generate_and_append_changelog_entry,
     _git_toplevel,
+    _is_sync_owned_changelog_entry,
     _load_changelog_entries,
     _global_config_path,
     _group_native_sync_duplicates_for_repair,
+    _group_subagent_sync_rows_for_repair,
     _legacy_ctx_metadata,
     _load_config,
     _maybe_copy_native_jsonl_into_legacy_session_dir,
@@ -1779,28 +1785,42 @@ def changelog_sync_cmd(
             scoped_candidates += 1
 
         label = (candidate.get("prompt_summary") or "").strip() or source_jsonl.stem
+        sync_run_id, sync_action = _sync_preview_action(
+            tool=str(candidate.get("tool") or "unknown").strip().lower(),
+            project_root=selected_root,
+            session_dir=source_jsonl.parent.resolve(),
+            start=str(candidate.get("start") or ""),
+            end=str(candidate.get("end") or ""),
+            source_jsonl=source_jsonl,
+            source_match_json=None,
+            actor=actor,
+        )
         if dry_run:
-            run_id, preview_status = _preview_changelog_append_status(
-                tool=str(candidate.get("tool") or "unknown").strip().lower(),
-                project_root=selected_root,
-                session_dir=source_jsonl.parent.resolve(),
-                start=str(candidate.get("start") or ""),
-                end=str(candidate.get("end") or ""),
-                source_jsonl=source_jsonl,
-                source_match_json=None,
-                actor=actor,
-            )
-            if preview_status == "exists":
+            if sync_action == "exists":
                 skipped += 1
                 click.echo(
-                    f"[DRY RUN] Sync: would skip existing run_id={run_id} "
+                    f"[DRY RUN] Sync: would skip existing run_id={sync_run_id} "
                     f"({candidate.get('tool', 'unknown')} {source_name})"
+                )
+                continue
+            if sync_action == "updated":
+                processed += 1
+                click.echo(
+                    f"[DRY RUN] Sync: would update existing run_id={sync_run_id} "
+                    f"({candidate.get('tool', 'unknown')} {source_name}) -> {selected_root}"
                 )
                 continue
             processed += 1
             click.echo(
-                f"[DRY RUN] Sync: would append run_id={run_id} "
+                f"[DRY RUN] Sync: would append run_id={sync_run_id} "
                 f"({candidate.get('tool', 'unknown')} {source_name}) -> {selected_root}"
+            )
+            continue
+
+        if sync_action == "exists":
+            skipped += 1
+            click.echo(
+                f"Sync: skipped existing run_id={sync_run_id} ({candidate.get('tool', 'unknown')} {source_name})"
             )
             continue
 
@@ -1826,6 +1846,10 @@ def changelog_sync_cmd(
         if appended and status == "appended":
             processed += 1
             click.echo(f"Sync: appended run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
+            continue
+        if appended and status == "updated":
+            processed += 1
+            click.echo(f"Sync: updated existing run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
             continue
         if status == "exists":
             skipped += 1
@@ -2454,19 +2478,64 @@ def _touched_files_is_empty(touched_files: object) -> bool:
     return True
 
 
+def _sync_preview_action(
+    *,
+    tool: str,
+    project_root: Path,
+    session_dir: Path,
+    start: str,
+    end: str,
+    source_jsonl: Path,
+    source_match_json: Path | None,
+    actor: str | None = None,
+) -> tuple[str | None, str]:
+    run_id, preview_status = _preview_changelog_append_status(
+        tool=tool,
+        project_root=project_root,
+        session_dir=session_dir,
+        start=start,
+        end=end,
+        source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+        actor=actor,
+    )
+    if preview_status != "exists":
+        return run_id, preview_status
+
+    actor_value = actor or _detect_actor(project_root=project_root)
+    changelog_dir = project_root / ".changelog"
+    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
+    existing_entry = _find_existing_entry_by_run_id((entries_path,), run_id)
+    if not _is_sync_owned_changelog_entry(existing_entry):
+        return run_id, "exists"
+
+    existing_end = _canonicalize_iso8601_utc(existing_entry.get("end")) if isinstance(existing_entry, dict) else None
+    incoming_end = _canonicalize_iso8601_utc(end)
+    if (
+        isinstance(existing_end, str)
+        and existing_end.strip()
+        and isinstance(incoming_end, str)
+        and incoming_end.strip()
+        and existing_end != incoming_end
+    ):
+        return run_id, "updated"
+    return run_id, "exists"
+
+
 def _rewrite_entries_file_removing_lines(*, entries_path: Path, remove_line_indexes: set[int]) -> bool:
     if not remove_line_indexes:
         return False
     if not entries_path.exists():
         return False
 
-    raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    rewritten_lines = [line for idx, line in enumerate(raw_lines) if idx not in remove_line_indexes]
-    if rewritten_lines == raw_lines:
-        return False
+    with _JSONL_IO_LOCK:
+        raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        rewritten_lines = [line for idx, line in enumerate(raw_lines) if idx not in remove_line_indexes]
+        if rewritten_lines == raw_lines:
+            return False
 
-    entries_path.write_text("".join(rewritten_lines), encoding="utf-8")
-    return True
+        entries_path.write_text("".join(rewritten_lines), encoding="utf-8")
+        return True
 
 
 def _repair_native_sync_record_line(label: str, record: dict | None) -> str | None:
@@ -2489,6 +2558,34 @@ def _echo_repair_native_sync_record_lines(*, label: str, records: object) -> Non
         return
     for record in records:
         line = _repair_native_sync_record_line(label, record)
+        if line:
+            click.echo(line)
+
+
+def _repair_subagent_sync_record_line(label: str, record: dict | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    return (
+        f"  {label} "
+        f"run_id={record.get('run_id')} "
+        f"ownership={record.get('ownership')} "
+        f"actor={record.get('actor')} "
+        f"end={record.get('end')} "
+        f"created_at={record.get('created_at')} "
+        f"file={record.get('entries_path')} "
+        f"line={record.get('line_index')} "
+        f"source_jsonl={record.get('source_jsonl')} "
+        f"parent_thread_id={record.get('parent_thread_id')} "
+        f"agent_role={record.get('agent_role')} "
+        f"agent_nickname={record.get('agent_nickname')}"
+    )
+
+
+def _echo_repair_subagent_sync_record_lines(*, label: str, records: object) -> None:
+    if not isinstance(records, list):
+        return
+    for record in records:
+        line = _repair_subagent_sync_record_line(label, record)
         if line:
             click.echo(line)
 
@@ -2573,6 +2670,92 @@ def changelog_repair_native_sync_cmd(project_root, actor, dry_run, apply):
         for group in auto_repair_groups:
             loser_records = group.get("loser_records") if isinstance(group, dict) else []
             for record in loser_records:
+                if not isinstance(record, dict):
+                    continue
+                entries_path = record.get("entries_path")
+                line_index = record.get("line_index")
+                if not isinstance(entries_path, Path):
+                    continue
+                if not isinstance(line_index, int):
+                    continue
+                removals_by_file.setdefault(entries_path, set()).add(line_index)
+
+        for entries_path in sorted(removals_by_file):
+            line_indexes = removals_by_file[entries_path]
+            if not line_indexes:
+                continue
+            backup_path = entries_path.with_suffix(".jsonl.bak")
+            shutil.copy2(entries_path, backup_path)
+            rewritten = _rewrite_entries_file_removing_lines(
+                entries_path=entries_path,
+                remove_line_indexes=line_indexes,
+            )
+            if rewritten:
+                rewritten_files += 1
+                rewritten_entries += len(line_indexes)
+
+    click.echo()
+    click.echo(
+        f"Summary: auto_repair_groups={len(auto_repair_groups)} "
+        f"manual_review_groups={len(manual_review_groups)} "
+        f"skipped_groups={len(skipped_groups)} "
+        f"rewritten_files={rewritten_files} "
+        f"rewritten_entries={rewritten_entries}"
+    )
+
+
+@changelog_cli.command("repair-subagent-sync")
+@click.option(
+    "--project-root",
+    help="Target git repo root (defaults to git toplevel of CWD).",
+)
+@click.option(
+    "--actor",
+    help="Filter by actor. If not specified, inspects all actors.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report duplicate groups without writing files.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    help="Apply safe repairs by removing explicit subagent-sync rows from entries.jsonl files.",
+)
+def changelog_repair_subagent_sync_cmd(project_root, actor, dry_run, apply):
+    """Repair explicit subagent-sync changelog rows with report-first output."""
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+    report = _group_subagent_sync_rows_for_repair(project_root=root, actor=actor)
+
+    auto_repair_groups = report.get("auto_repair_groups", [])
+    manual_review_groups = report.get("manual_review_groups", [])
+    skipped_groups = report.get("skipped_groups", [])
+
+    for group in auto_repair_groups:
+        entries = group.get("entries") if isinstance(group, dict) else []
+        click.echo(f"AUTO reason={group.get('reason')} entries={len(entries)}")
+        _echo_repair_subagent_sync_record_lines(label="entry", records=entries)
+
+    for group in manual_review_groups:
+        entries = group.get("entries") if isinstance(group, dict) else []
+        click.echo(f"MANUAL reason={group.get('reason')} entries={len(entries)}")
+        _echo_repair_subagent_sync_record_lines(label="entry", records=entries)
+
+    for group in skipped_groups:
+        entries = group.get("entries") if isinstance(group, dict) else []
+        click.echo(f"SKIP reason={group.get('reason')} entries={len(entries)}")
+        _echo_repair_subagent_sync_record_lines(label="entry", records=entries)
+
+    should_apply = bool(apply and not dry_run)
+    rewritten_files = 0
+    rewritten_entries = 0
+
+    if should_apply:
+        removals_by_file: dict[Path, set[int]] = {}
+        for group in auto_repair_groups:
+            entry_records = group.get("entry_records") if isinstance(group, dict) else []
+            for record in entry_records:
                 if not isinstance(record, dict):
                     continue
                 entries_path = record.get("entries_path")

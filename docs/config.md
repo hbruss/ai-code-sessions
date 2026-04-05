@@ -136,6 +136,8 @@ model = ""                     # Blank uses tool defaults (Claude defaults to `o
 claude_thinking_tokens = 8192  # Max thinking tokens (Claude only)
 ```
 
+When `evaluator = "claude"` and `model` is blank, changelog evaluation uses `opus[1m]` by default.
+
 ### Complete Example
 
 ```toml
@@ -256,7 +258,7 @@ tz = "America/New_York"
 enabled = true
 actor = "team-bot"
 evaluator = "claude"
-model = "opus"
+model = ""  # Optional; blank uses the Claude default (`opus[1m]`)
 ```
 
 ### CI/CD Configuration

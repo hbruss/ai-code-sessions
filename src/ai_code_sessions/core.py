@@ -635,6 +635,40 @@ def _peek_first_jsonl_object(filepath: Path):
     return None
 
 
+def _read_first_codex_session_meta_payload(filepath: Path) -> dict | None:
+    """Return the first session_meta payload dict from a Codex rollout JSONL."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "session_meta":
+                    continue
+                payload = obj.get("payload")
+                return payload if isinstance(payload, dict) else None
+    except OSError:
+        return None
+    return None
+
+
+def _is_explicit_codex_subagent_from_session_meta_payload(payload: dict | None) -> bool:
+    """Return True only for explicit subagent provenance via source.subagent.thread_spawn."""
+    if not isinstance(payload, dict):
+        return False
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return False
+    subagent = source.get("subagent")
+    if not isinstance(subagent, dict):
+        return False
+    return isinstance(subagent.get("thread_spawn"), dict)
+
+
 def _looks_like_codex_rollout_jsonl(first_obj: dict) -> bool:
     if not isinstance(first_obj, dict):
         return False
@@ -1719,6 +1753,193 @@ def _native_sync_record_metadata(record: dict) -> dict:
         "ownership": "sync" if _is_sync_owned_changelog_entry(entry) else "export",
         "end": _native_sync_sortable_timestamp(entry.get("end")),
         "created_at": _native_sync_sortable_timestamp(entry.get("created_at")),
+    }
+
+
+def _subagent_sync_record_metadata(record: dict) -> dict:
+    entry = record.get("entry") if isinstance(record, dict) else {}
+    if not isinstance(entry, dict):
+        entry = {}
+    transcript = entry.get("transcript")
+    source_jsonl = None
+    session_meta_payload = None
+    if isinstance(transcript, dict):
+        raw_source_jsonl = transcript.get("source_jsonl")
+        if isinstance(raw_source_jsonl, str) and raw_source_jsonl.strip():
+            source_jsonl = raw_source_jsonl
+            session_meta_payload = _read_first_codex_session_meta_payload(Path(source_jsonl))
+
+    parent_thread_id = None
+    agent_role = None
+    agent_nickname = None
+    if isinstance(session_meta_payload, dict):
+        source = session_meta_payload.get("source")
+        if isinstance(source, dict):
+            subagent = source.get("subagent")
+            if isinstance(subagent, dict):
+                thread_spawn = subagent.get("thread_spawn")
+                if isinstance(thread_spawn, dict):
+                    parent_thread_id = thread_spawn.get("parent_thread_id")
+
+        agent_role = session_meta_payload.get("agent_role")
+        agent_nickname = session_meta_payload.get("agent_nickname")
+
+    return {
+        "run_id": entry.get("run_id"),
+        "actor": record.get("actor"),
+        "ownership": "sync" if _is_sync_owned_changelog_entry(entry) else "export",
+        "created_at": _native_sync_sortable_timestamp(entry.get("created_at")),
+        "end": _native_sync_sortable_timestamp(entry.get("end")),
+        "entries_path": str(record.get("entries_path")) if isinstance(record.get("entries_path"), Path) else None,
+        "line_index": record.get("line_index"),
+        "source_jsonl": source_jsonl,
+        "parent_thread_id": parent_thread_id
+        if isinstance(parent_thread_id, str) and parent_thread_id.strip()
+        else None,
+        "agent_role": agent_role if isinstance(agent_role, str) and agent_role.strip() else None,
+        "agent_nickname": agent_nickname if isinstance(agent_nickname, str) and agent_nickname.strip() else None,
+    }
+
+
+def _group_subagent_sync_rows_for_repair(*, project_root: Path, actor: str | None = None) -> dict:
+    changelog_dir = Path(project_root) / ".changelog"
+    if not changelog_dir.exists():
+        return {
+            "auto_repair_groups": [],
+            "manual_review_groups": [],
+            "skipped_groups": [],
+        }
+
+    if actor:
+        specific = changelog_dir / _slugify_actor(actor)
+        actor_dirs = [specific] if specific.exists() else []
+    else:
+        actor_dirs = [path for path in changelog_dir.iterdir() if path.is_dir()]
+
+    auto_repair_groups: list[dict] = []
+    manual_review_groups: list[dict] = []
+    skipped_groups: list[dict] = []
+
+    for actor_dir in sorted(actor_dirs):
+        entries_path = actor_dir / "entries.jsonl"
+        if not entries_path.exists():
+            continue
+        try:
+            raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        except OSError:
+            continue
+        for line_index, raw_line in enumerate(raw_lines):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("source")
+            if not isinstance(source, dict) or source.get("kind") != "native_session":
+                continue
+
+            record = {
+                "actor": actor_dir.name,
+                "entries_path": entries_path,
+                "line_index": line_index,
+                "entry": entry,
+            }
+            metadata = _subagent_sync_record_metadata(record)
+            source_jsonl = metadata.get("source_jsonl")
+            group_key = {
+                "run_id": metadata.get("run_id"),
+                "entries_path": metadata.get("entries_path"),
+                "line_index": metadata.get("line_index"),
+            }
+            is_codex_entry = isinstance(entry.get("tool"), str) and entry.get("tool") == "codex"
+            if not is_codex_entry:
+                skipped_groups.append(
+                    {
+                        "group_key": group_key,
+                        "auto_repair": False,
+                        "reason": "out_of_scope_subagent_repair",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [metadata],
+                    }
+                )
+                continue
+
+            if not isinstance(source_jsonl, str) or not source_jsonl.strip():
+                manual_review_groups.append(
+                    {
+                        "group_key": group_key,
+                        "auto_repair": False,
+                        "reason": "missing_source_jsonl",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [metadata],
+                        "entry_records": [record],
+                    }
+                )
+                continue
+            if not _is_sync_owned_changelog_entry(entry):
+                skipped_groups.append(
+                    {
+                        "group_key": group_key,
+                        "auto_repair": False,
+                        "reason": "out_of_scope_subagent_repair",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [metadata],
+                    }
+                )
+                continue
+
+            source_path = Path(source_jsonl)
+            payload = _read_first_codex_session_meta_payload(source_path)
+            if payload is None:
+                manual_review_groups.append(
+                    {
+                        "group_key": group_key,
+                        "auto_repair": False,
+                        "reason": "unreadable_or_missing_source_jsonl",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [metadata],
+                        "entry_records": [record],
+                    }
+                )
+                continue
+
+            if _is_explicit_codex_subagent_from_session_meta_payload(payload):
+                auto_repair_groups.append(
+                    {
+                        "group_key": group_key,
+                        "auto_repair": True,
+                        "reason": "explicit_subagent_provenance",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [metadata],
+                        "entry_records": [record],
+                    }
+                )
+                continue
+
+            skipped_groups.append(
+                {
+                    "group_key": group_key,
+                    "auto_repair": False,
+                    "reason": "not_explicit_subagent_provenance",
+                    "winner": None,
+                    "losers": [],
+                    "entries": [metadata],
+                }
+            )
+
+    return {
+        "auto_repair_groups": auto_repair_groups,
+        "manual_review_groups": manual_review_groups,
+        "skipped_groups": skipped_groups,
     }
 
 
@@ -4770,6 +4991,9 @@ def _discover_native_codex_sessions(*, since: datetime, until: datetime) -> list
             if resolved_path in seen_paths:
                 continue
             seen_paths.add(resolved_path)
+            session_meta_payload = _read_first_codex_session_meta_payload(resolved_path)
+            if _is_explicit_codex_subagent_from_session_meta_payload(session_meta_payload):
+                continue
             start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(resolved_path)
             if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
                 continue

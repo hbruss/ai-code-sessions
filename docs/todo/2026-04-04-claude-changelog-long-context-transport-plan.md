@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11, Click, subprocess, pathlib, pytest, Ruff, Claude Code CLI
 
+**Implementation record (2026-04-04):** This plan is now implemented. Any `Expected: fail ...` lines below are retained as historical red-phase TDD notes, not current repo behavior.
+
 ---
 
 ### Task 1: Prove the Claude transport can avoid argv safely
@@ -68,7 +70,7 @@ Run:
 uv run --group dev pytest tests/test_changelog_evaluator_subprocess.py -q -k "does_not_pass_prompt_in_argv or defaults_to_opus_1m"
 ```
 
-Expected: fail because the current evaluator still appends the prompt to argv and defaults to `opus`.
+Expected (historical red phase): fail because the evaluator at that time still appended the prompt to argv and defaulted to `opus`.
 
 - [x] **Step 2: Implement the validated non-argv Claude transport**
 
@@ -164,7 +166,7 @@ Run:
 uv run --group dev pytest tests/test_changelog_evaluator_subprocess.py -q -k "artifact_paths_are_repo_local or archive_failed_changelog_prompt"
 ```
 
-Expected: fail because the helpers do not exist.
+Expected (historical red phase): fail because the helpers did not exist yet.
 
 - [x] **Step 2: Implement prompt artifact helpers in `core.py`**
 
@@ -237,7 +239,7 @@ Run:
 uv run --group dev pytest tests/test_changelog_evaluator_errors.py -q
 ```
 
-Expected: fail because the main changelog flow does not manage prompt artifacts yet.
+Expected (historical red phase): fail because the main changelog flow did not manage prompt artifacts yet.
 
 - [x] **Step 2: Update `_generate_and_append_changelog_entry(...)` to use the artifact lifecycle**
 
@@ -300,7 +302,7 @@ Run:
 uv run --group dev pytest tests/test_changelog_evaluator_subprocess.py tests/test_cli_changelog.py -q -k "opus_1m or explicit model"
 ```
 
-Expected: fail until the default model behavior is fully reflected in the relevant code path(s).
+Expected (historical red phase): fail until the default model behavior was fully reflected in the relevant code path(s).
 
 - [x] **Step 2: Update user-facing docs**
 
@@ -400,3 +402,7 @@ Plan complete and saved to `docs/todo/2026-04-04-claude-changelog-long-context-t
 **2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints
 
 Which approach?
+
+## Implementation Record
+
+- 2026-04-04 PDT: User-facing docs follow-through for this shipped Claude transport work was completed during the later native-sync subagent-exclusion documentation pass (README + changelog/config/repair docs updated together for consistency).

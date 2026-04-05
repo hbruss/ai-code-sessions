@@ -92,13 +92,22 @@ Key behaviors:
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
 - If repo evidence is too weak, the session is reported as unresolved and skipped
+- `ais changelog sync --codex` ignores explicit Codex subagent sessions discovered from native rollout provenance (`session_meta.source.subagent.thread_spawn`)
 - Native-session sync uses stable logical session identity, so re-running sync for the same live session does not append duplicate rows
 - Sync-owned native-session rows are updated in place as the same session grows
 - If a richer export-owned row already represents that session, sync leaves it alone instead of replacing it
 
 Sync-generated entries still include a `transcript` object, but `transcript.output_dir`, `transcript.index_html`, and `transcript.source_match_json` may be `null` when no HTML export exists yet. `transcript.source_jsonl` remains the required on-disk source of truth.
 
-To inspect or clean historical duplicate native-sync rows already written before this fix:
+### Forward Sync Behavior
+
+- `ais changelog sync` handles new native sessions and in-place updates for existing sync-owned rows
+- It does not perform bulk historical cleanup operations
+- It excludes explicit Codex subagent sessions from forward sync discovery
+
+### Historical Cleanup: Duplicate Native-Session Rows (`repair-native-sync`)
+
+Use `repair-native-sync` for duplicate logical native-session rows already written before the stable-identity sync fix:
 
 ```bash
 # Report only
@@ -113,6 +122,23 @@ ais changelog repair-native-sync --project-root /path/to/repo --apply
 
 `repair-native-sync` only auto-repairs high-confidence groups where `tool`, native source path, and session start all match. Cross-actor duplicates and same-path different-start groups are reported for manual review and are not rewritten automatically.
 The default report prints each group’s headline plus indented winner/loser or entry metadata, including ownership, actor, timestamps, and source file location, so you can inspect proposed repairs without digging into code.
+
+### Historical Cleanup: Explicit Subagent-Derived Rows (`repair-subagent-sync`)
+
+Use `repair-subagent-sync` for rows that were previously synced from explicit Codex subagent provenance and should be removed from historical changelog files:
+
+```bash
+# Report only
+ais changelog repair-subagent-sync
+
+# Target one repo and actor
+ais changelog repair-subagent-sync --project-root /path/to/repo --actor your-username
+
+# Apply safe removals
+ais changelog repair-subagent-sync --project-root /path/to/repo --apply
+```
+
+`repair-subagent-sync` is report-first and only removes rows identified as explicit Codex subagent-derived sync entries in auto-repair groups. Ambiguous groups are reported for manual review.
 
 ---
 
@@ -230,11 +256,13 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 
 2. **Evaluator Invocation**: The digest is passed to the evaluator (Codex or Claude) with a prompt asking for structured JSON output.
    - Codex receives the prompt through its normal CLI flow
-   - Claude receives the prompt through a non-argv transport so large prompt bodies do not hit shell argument-size limits first
+   - Claude receives the prompt through a non-argv transport (stdin) so large prompt bodies do not hit shell argument-size limits first
+   - For Claude runs, the full prompt artifact is written under `.tmp/changelog-eval/` during evaluation
 
 3. **Retry on Overflow**: If the context window overflows, the evaluator retries with a smaller "budget" digest that aggressively truncates content.
-   - Claude first attempts the full prompt
+   - Claude first attempts the full prompt (normal path)
    - If Claude times out or the prompt is too large, `ai-code-sessions` archives the failed full prompt under `.archive/changelog-eval/` and retries once with a budget digest
+   - This budget retry is a last-resort fallback after a failed full-prompt attempt
    - If the retry also fails, the budget prompt is archived too for debugging
 
 4. **Deduplication**: Each entry gets a content-based ID. If you re-run export on the same session, duplicate entries are detected and skipped.

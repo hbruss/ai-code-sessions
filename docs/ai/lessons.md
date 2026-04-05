@@ -28,3 +28,4 @@
 ## 2026-04-04
 
 - When reporting `repair-native-sync` work, do not imply the repair was limited to one actor unless `--actor` was actually used. The default command scans all actor directories in the target repo; if only one actor file was rewritten, say that explicitly and verify the other actor dirs separately before concluding they were untouched because of scope.
+- When Russ says docs must be fully updated for a major change, treat that as a full documentation-surface review requirement, not a narrow doc touch. Include `README.md` and the relevant user-facing docs for the current change and any immediately related prior major change in the same area.

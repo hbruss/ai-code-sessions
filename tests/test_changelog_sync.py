@@ -223,7 +223,7 @@ def test_generate_and_append_changelog_entry_records_source_metadata(tmp_path, m
     )
 
 
-def test_preview_changelog_append_status_returns_existing_run_id_when_session_end_grows(tmp_path, monkeypatch):
+def test_preview_changelog_append_status_returns_exists_when_sync_owned_session_end_grows(tmp_path, monkeypatch):
     project_root = tmp_path / "repo"
     project_root.mkdir()
     session_dir = tmp_path / ".codex" / "sessions" / "session-1"
@@ -850,6 +850,134 @@ def test_discover_native_codex_sessions_prefers_event_user_message_over_instruct
     assert sessions[0]["prompt_summary"] == (
         "Center yourself on the repo to refamiliarize yourself. I want to review a few things when you're done."
     )
+
+
+def test_discover_native_codex_sessions_keeps_top_level_candidates(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    session_path = _write_codex_session(
+        codex_root,
+        filename="rollout-top-level.jsonl",
+        start="2026-01-04T10:00:00Z",
+        end="2026-01-04T10:10:00Z",
+        cwd=repo,
+        session_id="codex-top-level",
+    )
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 4, 9, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(session["tool"], Path(session["source_jsonl"]).name) for session in sessions] == [
+        ("codex", session_path.name)
+    ]
+
+
+def test_discover_native_codex_sessions_excludes_explicit_subagent_rollout(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    start = "2026-01-04T12:00:00Z"
+    end = "2026-01-04T12:10:00Z"
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    day_dir = codex_root / f"{start_dt.year:04d}" / f"{start_dt.month:02d}" / f"{start_dt.day:02d}"
+    _write_jsonl(
+        day_dir / "rollout-explicit-subagent.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "timestamp": start,
+                "payload": {
+                    "timestamp": start,
+                    "cwd": str(repo),
+                    "id": "codex-subagent",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "id": "spawn-1",
+                            }
+                        }
+                    },
+                },
+            },
+            {"type": "event_msg", "timestamp": end},
+        ],
+    )
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 4, 11, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 13, 0, tzinfo=timezone.utc),
+    )
+
+    assert sessions == []
+
+
+def test_discover_native_sessions_codex_returns_only_top_level_candidates_when_subagent_exists(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    top_level = _write_codex_session(
+        codex_root,
+        filename="rollout-top-level-candidate.jsonl",
+        start="2026-01-04T14:00:00Z",
+        end="2026-01-04T14:10:00Z",
+        cwd=repo,
+        session_id="codex-top-level-candidate",
+    )
+
+    start = "2026-01-04T14:20:00Z"
+    end = "2026-01-04T14:30:00Z"
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    day_dir = codex_root / f"{start_dt.year:04d}" / f"{start_dt.month:02d}" / f"{start_dt.day:02d}"
+    _write_jsonl(
+        day_dir / "rollout-subagent-candidate.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "timestamp": start,
+                "payload": {
+                    "timestamp": start,
+                    "cwd": str(repo),
+                    "id": "codex-subagent-candidate",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "id": "spawn-2",
+                            }
+                        }
+                    },
+                },
+            },
+            {"type": "event_msg", "timestamp": end},
+        ],
+    )
+
+    sessions = core._discover_native_sessions(
+        tools=("codex",),
+        since=datetime(2026, 1, 4, 13, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(session["tool"], Path(session["source_jsonl"]).name) for session in sessions] == [
+        ("codex", top_level.name)
+    ]
 
 
 def test_resolve_native_session_project_returns_high_confidence_with_consistent_git_evidence(tmp_path, monkeypatch):

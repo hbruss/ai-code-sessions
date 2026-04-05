@@ -867,7 +867,7 @@ def test_changelog_sync_dry_run_reports_existing_candidates(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         cli_module,
-        "_preview_changelog_append_status",
+        "_sync_preview_action",
         lambda **_kwargs: ("run-existing", "exists"),
     )
 
@@ -891,6 +891,118 @@ def test_changelog_sync_dry_run_reports_existing_candidates(monkeypatch, tmp_pat
     assert "[DRY RUN] Sync: would skip existing run_id=run-existing" in result.output
     assert "processed=0" in result.output
     assert "skipped=1" in result.output
+
+
+def test_changelog_sync_dry_run_reports_update_candidates(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-update.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:10:00+00:00",
+                "session_id": "codex-update",
+                "prompt_summary": "Needs update",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {
+                "plausible_project_roots": [str(repo_root)],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_sync_preview_action",
+        lambda **_kwargs: ("run-existing", "updated"),
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("append should not run during dry-run")
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fail_if_called)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "sync",
+            "--codex",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "[DRY RUN] Sync: would update existing run_id=run-existing" in result.output
+    assert "processed=1" in result.output
+    assert "skipped=0" in result.output
+
+
+def test_changelog_sync_treats_updated_status_as_processed_success(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-update-real.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:10:00+00:00",
+                "session_id": "codex-update-real",
+                "prompt_summary": "Needs update",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {
+                "plausible_project_roots": [str(repo_root)],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_sync_preview_action",
+        lambda **_kwargs: ("run-existing", "updated"),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_generate_and_append_changelog_entry",
+        lambda **_kwargs: (True, "run-existing", "updated"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--codex"])
+
+    assert result.exit_code == 0
+    assert "Sync: updated existing run_id=run-existing" in result.output
+    assert "processed=1" in result.output
+    assert "failed=" not in result.output
 
 
 def test_changelog_sync_medium_confidence_prefilled_root_still_prompts(monkeypatch, tmp_path):
@@ -1051,7 +1163,7 @@ def test_changelog_sync_project_root_limit_applies_after_repo_filter(monkeypatch
     monkeypatch.setattr(cli_module, "_resolve_native_session_project", fake_resolve)
     monkeypatch.setattr(
         cli_module,
-        "_preview_changelog_append_status",
+        "_sync_preview_action",
         lambda **_kwargs: ("run-preview", "appended"),
     )
 
@@ -1188,6 +1300,7 @@ def test_changelog_repair_native_sync_apply_rewrites_safe_groups_only(tmp_path):
     alice_entries.write_text(
         "\n".join(
             [
+                json.dumps({"note": "keep-first-line"}),
                 json.dumps(safe_loser),
                 "not-json-line",
                 "",
@@ -1221,6 +1334,7 @@ def test_changelog_repair_native_sync_apply_rewrites_safe_groups_only(tmp_path):
     assert "rewritten_entries=1" in result.output
     assert "winner run_id=safe-winner ownership=sync actor=alice" in result.output
     assert "loser run_id=safe-loser ownership=sync actor=alice" in result.output
+    assert "line=1" in result.output
     assert "entry run_id=alice-cross ownership=sync actor=alice" in result.output
     assert "entry run_id=bob-cross ownership=sync actor=bob" in result.output
     assert "entry run_id=split-a ownership=sync actor=alice" in result.output
@@ -1234,6 +1348,7 @@ def test_changelog_repair_native_sync_apply_rewrites_safe_groups_only(tmp_path):
     assert "alice-cross" in rewritten_alice
     assert "split-a" in rewritten_alice
     assert "split-b" in rewritten_alice
+    assert '"note": "keep-first-line"' in rewritten_alice
     assert "not-json-line" in rewritten_alice
     assert "\n\n" in rewritten_alice
 
@@ -1377,3 +1492,518 @@ def test_changelog_repair_native_sync_prefers_export_owned_winner(tmp_path):
     rewritten = entries_path.read_text(encoding="utf-8")
     assert "run-export-owned" in rewritten
     assert "run-sync-owned" not in rewritten
+
+
+def test_changelog_repair_subagent_sync_dry_run_reports_explicit_rows_with_details(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+
+    explicit_source_jsonl = tmp_path / "explicit-subagent.jsonl"
+    explicit_source_jsonl.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "agent_role": "subagent",
+                    "agent_nickname": "helper-a",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "thread-parent-1",
+                                "agent_role": "subagent",
+                                "agent_nickname": "helper-a",
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = _native_sync_entry(
+        run_id="run-explicit-subagent",
+        actor="alice",
+        native_source_path=explicit_source_jsonl,
+        start="2026-01-06T00:00:00+00:00",
+        end="2026-01-06T00:15:00+00:00",
+        created_at="2026-01-06T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(entry)])
+    before = entries_path.read_text(encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-subagent-sync",
+            "--project-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "AUTO reason=explicit_subagent_provenance entries=1" in result.output
+    assert "entry run_id=run-explicit-subagent ownership=sync actor=alice" in result.output
+    assert "end=2026-01-06T00:15:00+00:00" in result.output
+    assert "created_at=2026-01-06T00:15:00+00:00" in result.output
+    assert f"file={entries_path}" in result.output
+    assert "line=0" in result.output
+    assert f"source_jsonl={explicit_source_jsonl}" in result.output
+    assert "parent_thread_id=thread-parent-1" in result.output
+    assert "agent_role=subagent" in result.output
+    assert "agent_nickname=helper-a" in result.output
+    assert "Summary: auto_repair_groups=1" in result.output
+    assert "manual_review_groups=0" in result.output
+    assert "skipped_groups=0" in result.output
+    assert "rewritten_files=0" in result.output
+    assert "rewritten_entries=0" in result.output
+    assert entries_path.read_text(encoding="utf-8") == before
+    assert not entries_path.with_suffix(".jsonl.bak").exists()
+
+
+def test_changelog_repair_subagent_sync_reports_manual_review_for_missing_source_jsonl(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    entry = _native_sync_entry(
+        run_id="run-missing-source-jsonl",
+        actor="alice",
+        native_source_path=tmp_path / "unused.jsonl",
+        start="2026-01-07T00:00:00+00:00",
+        end="2026-01-07T00:15:00+00:00",
+        created_at="2026-01-07T00:15:00+00:00",
+    )
+    entry["transcript"].pop("source_jsonl", None)
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-subagent-sync",
+            "--project-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "MANUAL reason=missing_source_jsonl entries=1" in result.output
+    assert "entry run_id=run-missing-source-jsonl ownership=export actor=alice" in result.output
+    assert "source_jsonl=None" in result.output
+    assert "Summary: auto_repair_groups=0" in result.output
+    assert "manual_review_groups=1" in result.output
+    assert "rewritten_files=0" in result.output
+    assert "rewritten_entries=0" in result.output
+    assert not entries_path.with_suffix(".jsonl.bak").exists()
+
+
+def test_changelog_repair_subagent_sync_apply_removes_explicit_rows_and_writes_backups(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+
+    explicit_source_jsonl = tmp_path / "explicit-subagent-apply.jsonl"
+    explicit_source_jsonl.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "thread-parent-2",
+                                "agent_role": "subagent",
+                                "agent_nickname": "helper-b",
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    top_level_source_jsonl = tmp_path / "top-level-apply.jsonl"
+    top_level_source_jsonl.write_text(
+        json.dumps({"type": "session_meta", "payload": {"source": {}}}) + "\n",
+        encoding="utf-8",
+    )
+    explicit_entry = _native_sync_entry(
+        run_id="run-explicit-remove",
+        actor="alice",
+        native_source_path=explicit_source_jsonl,
+        start="2026-01-08T00:00:00+00:00",
+        end="2026-01-08T00:15:00+00:00",
+        created_at="2026-01-08T00:15:00+00:00",
+    )
+    skipped_entry = _native_sync_entry(
+        run_id="run-top-level-keep",
+        actor="alice",
+        native_source_path=top_level_source_jsonl,
+        start="2026-01-08T01:00:00+00:00",
+        end="2026-01-08T01:15:00+00:00",
+        created_at="2026-01-08T01:15:00+00:00",
+    )
+    entries_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"note": "keep-first-line"}),
+                json.dumps(explicit_entry),
+                "not-json-line",
+                "",
+                json.dumps(skipped_entry),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-subagent-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "AUTO reason=explicit_subagent_provenance entries=1" in result.output
+    assert "SKIP reason=not_explicit_subagent_provenance entries=1" in result.output
+    assert "line=1" in result.output
+    assert "Summary: auto_repair_groups=1" in result.output
+    assert "skipped_groups=1" in result.output
+    assert "rewritten_files=1" in result.output
+    assert "rewritten_entries=1" in result.output
+    assert entries_path.with_suffix(".jsonl.bak").exists()
+
+    rewritten = entries_path.read_text(encoding="utf-8")
+    assert "run-explicit-remove" not in rewritten
+    assert "run-top-level-keep" in rewritten
+    assert '"note": "keep-first-line"' in rewritten
+    assert "not-json-line" in rewritten
+    assert "\n\n" in rewritten
+
+
+def test_changelog_repair_subagent_sync_second_apply_is_noop(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+
+    explicit_source_jsonl = tmp_path / "explicit-subagent-idempotent.jsonl"
+    explicit_source_jsonl.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "thread-parent-3",
+                                "agent_role": "subagent",
+                                "agent_nickname": "helper-c",
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    explicit_entry = _native_sync_entry(
+        run_id="run-explicit-idempotent",
+        actor="alice",
+        native_source_path=explicit_source_jsonl,
+        start="2026-01-09T00:00:00+00:00",
+        end="2026-01-09T00:15:00+00:00",
+        created_at="2026-01-09T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(explicit_entry)])
+
+    runner = CliRunner()
+    first = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-subagent-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+    assert first.exit_code == 0
+    assert "rewritten_files=1" in first.output
+    assert "rewritten_entries=1" in first.output
+    assert entries_path.with_suffix(".jsonl.bak").exists()
+
+    second = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-subagent-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+    assert second.exit_code == 0
+    assert "Summary: auto_repair_groups=0" in second.output
+    assert "manual_review_groups=0" in second.output
+    assert "skipped_groups=0" in second.output
+    assert "rewritten_files=0" in second.output
+    assert "rewritten_entries=0" in second.output
+
+
+def test_group_subagent_sync_rows_for_repair_marks_explicit_subagent_as_auto_candidate(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    source_jsonl = tmp_path / "subagent-source.jsonl"
+    source_jsonl.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "agent_role": "subagent",
+                            "agent_nickname": "helper-a",
+                            "source": {
+                                "subagent": {
+                                    "thread_spawn": {
+                                        "parent_thread_id": "thread-parent-1",
+                                        "agent_role": "subagent",
+                                        "agent_nickname": "helper-a",
+                                    }
+                                }
+                            },
+                        },
+                    }
+                ),
+                json.dumps({"type": "event_msg", "payload": {"text": "hello"}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = _native_sync_entry(
+        run_id="run-subagent",
+        actor="alice",
+        native_source_path=source_jsonl,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:15:00+00:00",
+        created_at="2026-01-01T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert len(grouped["auto_repair_groups"]) == 1
+    group = grouped["auto_repair_groups"][0]
+    assert group["auto_repair"] is True
+    assert group["reason"] == "explicit_subagent_provenance"
+    assert group["winner"] is None
+    assert group["losers"] == []
+    assert len(group["entries"]) == 1
+    row = group["entries"][0]
+    assert row["run_id"] == "run-subagent"
+    assert row["actor"] == "alice"
+    assert row["ownership"] == "sync"
+    assert row["created_at"] == "2026-01-01T00:15:00+00:00"
+    assert row["end"] == "2026-01-01T00:15:00+00:00"
+    assert row["entries_path"] == str(entries_path)
+    assert row["line_index"] == 0
+    assert row["source_jsonl"] == str(source_jsonl)
+    assert row["parent_thread_id"] == "thread-parent-1"
+    assert row["agent_role"] == "subagent"
+    assert row["agent_nickname"] == "helper-a"
+
+
+def test_group_subagent_sync_rows_for_repair_does_not_auto_repair_export_owned_explicit_subagent(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    source_jsonl = tmp_path / "subagent-export-source.jsonl"
+    source_jsonl.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "agent_role": "subagent",
+                    "agent_nickname": "helper-b",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "thread-parent-2",
+                                "agent_role": "subagent",
+                                "agent_nickname": "helper-b",
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = _native_sync_entry(
+        run_id="run-subagent-export-owned",
+        actor="alice",
+        native_source_path=source_jsonl,
+        start="2026-01-02T00:00:00+00:00",
+        end="2026-01-02T00:15:00+00:00",
+        created_at="2026-01-02T00:15:00+00:00",
+        export_owned=True,
+    )
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert grouped["auto_repair_groups"] == []
+    assert len(grouped["skipped_groups"]) == 1
+    group = grouped["skipped_groups"][0]
+    assert group["reason"] == "out_of_scope_subagent_repair"
+    row = group["entries"][0]
+    assert row["run_id"] == "run-subagent-export-owned"
+    assert row["ownership"] == "export"
+
+
+def test_group_subagent_sync_rows_for_repair_does_not_auto_repair_non_codex_explicit_subagent(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    source_jsonl = tmp_path / "subagent-non-codex-source.jsonl"
+    source_jsonl.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "agent_role": "subagent",
+                    "agent_nickname": "helper-c",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "thread-parent-3",
+                                "agent_role": "subagent",
+                                "agent_nickname": "helper-c",
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = _native_sync_entry(
+        run_id="run-subagent-non-codex",
+        actor="alice",
+        native_source_path=source_jsonl,
+        start="2026-01-02T00:00:00+00:00",
+        end="2026-01-02T00:15:00+00:00",
+        created_at="2026-01-02T00:15:00+00:00",
+    )
+    entry["tool"] = "claude"
+    source = entry.get("source")
+    if isinstance(source, dict):
+        identity = source.get("identity")
+        if isinstance(identity, dict):
+            identity["tool"] = "claude"
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert grouped["auto_repair_groups"] == []
+    assert len(grouped["skipped_groups"]) == 1
+    group = grouped["skipped_groups"][0]
+    assert group["reason"] == "out_of_scope_subagent_repair"
+    row = group["entries"][0]
+    assert row["run_id"] == "run-subagent-non-codex"
+    assert row["ownership"] == "sync"
+
+
+def test_group_subagent_sync_rows_for_repair_missing_source_jsonl_is_manual_review(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    entry = _native_sync_entry(
+        run_id="run-missing-source-jsonl",
+        actor="alice",
+        native_source_path=tmp_path / "unused.jsonl",
+        start="2026-01-03T00:00:00+00:00",
+        end="2026-01-03T00:15:00+00:00",
+        created_at="2026-01-03T00:15:00+00:00",
+    )
+    entry["transcript"].pop("source_jsonl", None)
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert len(grouped["manual_review_groups"]) == 1
+    group = grouped["manual_review_groups"][0]
+    assert group["auto_repair"] is False
+    assert group["reason"] == "missing_source_jsonl"
+    assert group["entries"][0]["run_id"] == "run-missing-source-jsonl"
+    assert group["entries"][0]["source_jsonl"] is None
+
+
+def test_group_subagent_sync_rows_for_repair_unreadable_or_missing_source_is_manual_review(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    missing_source_jsonl = tmp_path / "does-not-exist.jsonl"
+    entry = _native_sync_entry(
+        run_id="run-unreadable-source",
+        actor="alice",
+        native_source_path=missing_source_jsonl,
+        start="2026-01-04T00:00:00+00:00",
+        end="2026-01-04T00:15:00+00:00",
+        created_at="2026-01-04T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert len(grouped["manual_review_groups"]) == 1
+    group = grouped["manual_review_groups"][0]
+    assert group["auto_repair"] is False
+    assert group["reason"] == "unreadable_or_missing_source_jsonl"
+    assert group["entries"][0]["run_id"] == "run-unreadable-source"
+    assert group["entries"][0]["source_jsonl"] == str(missing_source_jsonl)
+
+
+def test_group_subagent_sync_rows_for_repair_top_level_row_is_not_auto_repair(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    source_jsonl = tmp_path / "top-level-source.jsonl"
+    source_jsonl.write_text(
+        json.dumps({"type": "session_meta", "payload": {"source": {}}}) + "\n",
+        encoding="utf-8",
+    )
+    entry = _native_sync_entry(
+        run_id="run-top-level",
+        actor="alice",
+        native_source_path=source_jsonl,
+        start="2026-01-05T00:00:00+00:00",
+        end="2026-01-05T00:15:00+00:00",
+        created_at="2026-01-05T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(entry)])
+
+    grouped = core_module._group_subagent_sync_rows_for_repair(project_root=tmp_path)
+
+    assert grouped["auto_repair_groups"] == []
+    assert len(grouped["skipped_groups"]) == 1
+    group = grouped["skipped_groups"][0]
+    assert group["auto_repair"] is False
+    assert group["reason"] == "not_explicit_subagent_provenance"
+    assert group["entries"][0]["run_id"] == "run-top-level"

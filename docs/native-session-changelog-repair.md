@@ -6,7 +6,7 @@ Last updated: 2026-04-03 22:53 PDT
 
 ## Problem
 
-`ais changelog sync` was intended to be idempotent for native Codex and Claude sessions, but the current native-session dedup key is not stable. The current identity includes the session `end` timestamp, so a live session that grows on disk is treated as a new identity on each sync pass.
+`ais changelog sync` was intended to be idempotent for native Codex and Claude sessions, but the historical native-session dedup key was not stable. The old identity included the session `end` timestamp, so a live session that grew on disk was treated as a new identity on each sync pass.
 
 This produces duplicate changelog rows for one logical Codex or Claude session. The bug is systemic across repos, including this repository and downstream repos already inspected.
 
@@ -37,7 +37,7 @@ This produces duplicate changelog rows for one logical Codex or Claude session. 
 
 ## Current Incorrect Model
 
-Today the native-session identity is effectively:
+Before this fix, the native-session identity was effectively:
 
 ```text
 (tool, native_source_path, start, end)
@@ -145,6 +145,8 @@ This prevents the current misleading behavior where a later observation computes
 ## Cleanup Strategy
 
 Cleanup is a separate maintenance operation. It must not be bundled into normal sync.
+
+Adjacent behavior now implemented: forward `ais changelog sync --codex` discovery ignores explicit Codex subagent sessions (provenance in `session_meta.source.subagent.thread_spawn`). Historical rows that were synced before that exclusion are handled by a separate cleanup command, `ais changelog repair-subagent-sync`.
 
 ### Command shape
 
