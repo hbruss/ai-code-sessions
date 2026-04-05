@@ -132,7 +132,7 @@ Settings for changelog generation:
 enabled = true                 # Enable changelog generation by default
 actor = "your-github-username" # Who gets credited in changelogs
 evaluator = "codex"           # "codex" or "claude"
-model = ""                     # Blank uses tool defaults
+model = ""                     # Blank uses tool defaults (Claude defaults to `opus[1m]`)
 claude_thinking_tokens = 8192  # Max thinking tokens (Claude only)
 ```
 
@@ -150,7 +150,7 @@ claude_cmd = "claude"
 enabled = true
 actor = "jsmith"
 evaluator = "claude"
-model = "opus"  # Use a model supported by the selected evaluator CLI
+model = ""  # Optional; blank uses Claude's long-context default (`opus[1m]`)
 claude_thinking_tokens = 16384
 ```
 
@@ -178,7 +178,7 @@ Environment variables override config file settings. Useful for:
 | `CTX_CHANGELOG` | Enable changelog (`1`, `true`) | disabled |
 | `CTX_ACTOR` | Changelog actor (username) | auto-detected |
 | `CTX_CHANGELOG_EVALUATOR` | `codex` or `claude` | `codex` |
-| `CTX_CHANGELOG_MODEL` | Model for evaluator (must be supported by selected CLI) | tool default |
+| `CTX_CHANGELOG_MODEL` | Model for evaluator (must be supported by selected CLI) | tool default (`opus[1m]` for Claude) |
 | `CTX_CHANGELOG_CLAUDE_THINKING_TOKENS` | Max thinking tokens | `8192` |
 
 ### Alternative Variable Names

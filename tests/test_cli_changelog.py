@@ -26,6 +26,47 @@ def _write_entries(path: Path, entries: list[str]) -> None:
     path.write_text("\n".join(entries) + "\n", encoding="utf-8")
 
 
+def _native_sync_entry(
+    *,
+    run_id: str,
+    actor: str,
+    native_source_path: Path,
+    start: str,
+    end: str,
+    created_at: str,
+    export_owned: bool = False,
+) -> dict:
+    transcript = {
+        "source_jsonl": str(native_source_path),
+        "output_dir": None,
+        "index_html": None,
+    }
+    if export_owned:
+        transcript["output_dir"] = str(native_source_path.parent)
+        transcript["index_html"] = str(native_source_path.parent / "index.html")
+
+    return {
+        "run_id": run_id,
+        "created_at": created_at,
+        "tool": "codex",
+        "actor": actor,
+        "summary": f"summary {run_id}",
+        "bullets": [f"bullet {run_id}"],
+        "tags": [],
+        "start": start,
+        "end": end,
+        "transcript": transcript,
+        "source": {
+            "kind": "native_session",
+            "identity": {
+                "tool": "codex",
+                "native_source_path": str(native_source_path),
+                "start": start,
+            },
+        },
+    }
+
+
 def test_changelog_since_filters_by_date_and_tag(tmp_path):
     actor_dir = tmp_path / ".changelog" / "alice"
     actor_dir.mkdir(parents=True)
@@ -1035,3 +1076,304 @@ def test_changelog_sync_project_root_limit_applies_after_repo_filter(monkeypatch
     assert "rollout-target-one.jsonl" in result.output
     assert "rollout-target-two.jsonl" not in result.output
     assert "processed=1" in result.output
+
+
+def test_changelog_repair_native_sync_dry_run_reports_without_rewriting(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    native_source_path = tmp_path / "native-rollout.jsonl"
+    native_source_path.write_text("{}", encoding="utf-8")
+
+    duplicate_older = _native_sync_entry(
+        run_id="run-older",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:10:00+00:00",
+        created_at="2026-01-01T00:10:00+00:00",
+    )
+    duplicate_newer = _native_sync_entry(
+        run_id="run-newer",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:15:00+00:00",
+        created_at="2026-01-01T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(duplicate_older), json.dumps(duplicate_newer)])
+    before = entries_path.read_text(encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-native-sync",
+            "--project-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "auto_repair_groups=1" in result.output
+    assert "rewritten_files=0" in result.output
+    assert entries_path.read_text(encoding="utf-8") == before
+    assert not entries_path.with_suffix(".jsonl.bak").exists()
+
+
+def test_changelog_repair_native_sync_apply_rewrites_safe_groups_only(tmp_path):
+    alice_dir = tmp_path / ".changelog" / "alice"
+    bob_dir = tmp_path / ".changelog" / "bob"
+    alice_dir.mkdir(parents=True)
+    bob_dir.mkdir(parents=True)
+    alice_entries = alice_dir / "entries.jsonl"
+    bob_entries = bob_dir / "entries.jsonl"
+
+    safe_source = tmp_path / "safe-source.jsonl"
+    cross_actor_source = tmp_path / "cross-source.jsonl"
+    split_source = tmp_path / "split-source.jsonl"
+    for path in (safe_source, cross_actor_source, split_source):
+        path.write_text("{}", encoding="utf-8")
+
+    safe_loser = _native_sync_entry(
+        run_id="safe-loser",
+        actor="alice",
+        native_source_path=safe_source,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00+00:00",
+        created_at="2026-01-01T00:05:00+00:00",
+    )
+    safe_winner = _native_sync_entry(
+        run_id="safe-winner",
+        actor="alice",
+        native_source_path=safe_source,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:06:00+00:00",
+        created_at="2026-01-01T00:06:00+00:00",
+    )
+    alice_cross_actor = _native_sync_entry(
+        run_id="alice-cross",
+        actor="alice",
+        native_source_path=cross_actor_source,
+        start="2026-01-02T00:00:00+00:00",
+        end="2026-01-02T00:05:00+00:00",
+        created_at="2026-01-02T00:05:00+00:00",
+    )
+    split_a = _native_sync_entry(
+        run_id="split-a",
+        actor="alice",
+        native_source_path=split_source,
+        start="2026-01-03T00:00:00+00:00",
+        end="2026-01-03T00:05:00+00:00",
+        created_at="2026-01-03T00:05:00+00:00",
+    )
+    split_b = _native_sync_entry(
+        run_id="split-b",
+        actor="alice",
+        native_source_path=split_source,
+        start="2026-01-03T00:10:00+00:00",
+        end="2026-01-03T00:15:00+00:00",
+        created_at="2026-01-03T00:15:00+00:00",
+    )
+    bob_cross_actor = _native_sync_entry(
+        run_id="bob-cross",
+        actor="bob",
+        native_source_path=cross_actor_source,
+        start="2026-01-02T00:00:00+00:00",
+        end="2026-01-02T00:06:00+00:00",
+        created_at="2026-01-02T00:06:00+00:00",
+    )
+
+    alice_entries.write_text(
+        "\n".join(
+            [
+                json.dumps(safe_loser),
+                "not-json-line",
+                "",
+                json.dumps(safe_winner),
+                json.dumps(alice_cross_actor),
+                json.dumps(split_a),
+                json.dumps(split_b),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_entries(bob_entries, [json.dumps(bob_cross_actor)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-native-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "auto_repair_groups=1" in result.output
+    assert "manual_review_groups=1" in result.output
+    assert "rewritten_files=1" in result.output
+    assert "rewritten_entries=1" in result.output
+    assert "winner run_id=safe-winner ownership=sync actor=alice" in result.output
+    assert "loser run_id=safe-loser ownership=sync actor=alice" in result.output
+    assert "entry run_id=alice-cross ownership=sync actor=alice" in result.output
+    assert "entry run_id=bob-cross ownership=sync actor=bob" in result.output
+    assert "entry run_id=split-a ownership=sync actor=alice" in result.output
+    assert "entry run_id=split-b ownership=sync actor=alice" in result.output
+    assert alice_entries.with_suffix(".jsonl.bak").exists()
+    assert not bob_entries.with_suffix(".jsonl.bak").exists()
+
+    rewritten_alice = alice_entries.read_text(encoding="utf-8")
+    assert "safe-loser" not in rewritten_alice
+    assert "safe-winner" in rewritten_alice
+    assert "alice-cross" in rewritten_alice
+    assert "split-a" in rewritten_alice
+    assert "split-b" in rewritten_alice
+    assert "not-json-line" in rewritten_alice
+    assert "\n\n" in rewritten_alice
+
+    rewritten_bob = bob_entries.read_text(encoding="utf-8")
+    assert "bob-cross" in rewritten_bob
+
+
+def test_changelog_repair_native_sync_same_path_different_start_not_auto_repaired(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    native_source_path = tmp_path / "same-path.jsonl"
+    native_source_path.write_text("{}", encoding="utf-8")
+
+    start_a = _native_sync_entry(
+        run_id="run-start-a",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00+00:00",
+        created_at="2026-01-01T00:05:00+00:00",
+    )
+    start_b = _native_sync_entry(
+        run_id="run-start-b",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:10:00+00:00",
+        end="2026-01-01T00:15:00+00:00",
+        created_at="2026-01-01T00:15:00+00:00",
+    )
+    _write_entries(entries_path, [json.dumps(start_a), json.dumps(start_b)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-native-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "auto_repair_groups=0" in result.output
+    assert "rewritten_entries=0" in result.output
+    assert not entries_path.with_suffix(".jsonl.bak").exists()
+
+
+def test_changelog_repair_native_sync_cross_actor_groups_are_manual_review(tmp_path):
+    alice_dir = tmp_path / ".changelog" / "alice"
+    bob_dir = tmp_path / ".changelog" / "bob"
+    alice_dir.mkdir(parents=True)
+    bob_dir.mkdir(parents=True)
+    alice_entries = alice_dir / "entries.jsonl"
+    bob_entries = bob_dir / "entries.jsonl"
+
+    native_source_path = tmp_path / "cross-actor.jsonl"
+    native_source_path.write_text("{}", encoding="utf-8")
+
+    alice_entry = _native_sync_entry(
+        run_id="alice-dup",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00+00:00",
+        created_at="2026-01-01T00:05:00+00:00",
+    )
+    bob_entry = _native_sync_entry(
+        run_id="bob-dup",
+        actor="bob",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:06:00+00:00",
+        created_at="2026-01-01T00:06:00+00:00",
+    )
+    _write_entries(alice_entries, [json.dumps(alice_entry)])
+    _write_entries(bob_entries, [json.dumps(bob_entry)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-native-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "manual_review_groups=1" in result.output
+    assert "auto_repair_groups=0" in result.output
+    assert "rewritten_files=0" in result.output
+    assert not alice_entries.with_suffix(".jsonl.bak").exists()
+    assert not bob_entries.with_suffix(".jsonl.bak").exists()
+
+
+def test_changelog_repair_native_sync_prefers_export_owned_winner(tmp_path):
+    actor_dir = tmp_path / ".changelog" / "alice"
+    actor_dir.mkdir(parents=True)
+    entries_path = actor_dir / "entries.jsonl"
+    native_source_path = tmp_path / "winner-source.jsonl"
+    native_source_path.write_text("{}", encoding="utf-8")
+
+    sync_owned = _native_sync_entry(
+        run_id="run-sync-owned",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:20:00+00:00",
+        created_at="2026-01-01T00:20:00+00:00",
+    )
+    export_owned = _native_sync_entry(
+        run_id="run-export-owned",
+        actor="alice",
+        native_source_path=native_source_path,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00+00:00",
+        created_at="2026-01-01T00:05:00+00:00",
+        export_owned=True,
+    )
+    _write_entries(entries_path, [json.dumps(sync_owned), json.dumps(export_owned)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "repair-native-sync",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "winner=run-export-owned" in result.output
+    rewritten = entries_path.read_text(encoding="utf-8")
+    assert "run-export-owned" in rewritten
+    assert "run-sync-owned" not in rewritten

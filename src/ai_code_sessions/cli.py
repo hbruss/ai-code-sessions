@@ -44,6 +44,7 @@ from .core import (
     _git_toplevel,
     _load_changelog_entries,
     _global_config_path,
+    _group_native_sync_duplicates_for_repair,
     _legacy_ctx_metadata,
     _load_config,
     _maybe_copy_native_jsonl_into_legacy_session_dir,
@@ -2451,6 +2452,159 @@ def _touched_files_is_empty(touched_files: object) -> bool:
         if isinstance(value, list) and value:
             return False
     return True
+
+
+def _rewrite_entries_file_removing_lines(*, entries_path: Path, remove_line_indexes: set[int]) -> bool:
+    if not remove_line_indexes:
+        return False
+    if not entries_path.exists():
+        return False
+
+    raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    rewritten_lines = [line for idx, line in enumerate(raw_lines) if idx not in remove_line_indexes]
+    if rewritten_lines == raw_lines:
+        return False
+
+    entries_path.write_text("".join(rewritten_lines), encoding="utf-8")
+    return True
+
+
+def _repair_native_sync_record_line(label: str, record: dict | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    return (
+        f"  {label} "
+        f"run_id={record.get('run_id')} "
+        f"ownership={record.get('ownership')} "
+        f"actor={record.get('actor')} "
+        f"end={record.get('end')} "
+        f"created_at={record.get('created_at')} "
+        f"file={record.get('entries_path')} "
+        f"line={record.get('line_index')}"
+    )
+
+
+def _echo_repair_native_sync_record_lines(*, label: str, records: object) -> None:
+    if not isinstance(records, list):
+        return
+    for record in records:
+        line = _repair_native_sync_record_line(label, record)
+        if line:
+            click.echo(line)
+
+
+@changelog_cli.command("repair-native-sync")
+@click.option(
+    "--project-root",
+    help="Target git repo root (defaults to git toplevel of CWD).",
+)
+@click.option(
+    "--actor",
+    help="Filter by actor. If not specified, inspects all actors.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report duplicate groups without writing files.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    help="Apply safe repairs by removing duplicate loser rows from entries.jsonl files.",
+)
+def changelog_repair_native_sync_cmd(project_root, actor, dry_run, apply):
+    """Repair high-confidence duplicate native-sync changelog entries."""
+    root = Path(project_root).resolve() if project_root else (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+    report = _group_native_sync_duplicates_for_repair(project_root=root, actor=actor)
+
+    auto_repair_groups = report.get("auto_repair_groups", [])
+    manual_review_groups = report.get("manual_review_groups", [])
+    skipped_groups = report.get("skipped_groups", [])
+
+    for group in auto_repair_groups:
+        group_key = group.get("group_key") if isinstance(group, dict) else {}
+        winner = group.get("winner") if isinstance(group, dict) else {}
+        losers = group.get("losers") if isinstance(group, dict) else []
+        click.echo(
+            "AUTO "
+            f"tool={group_key.get('tool')} "
+            f"path={group_key.get('native_source_path')} "
+            f"start={group_key.get('start')} "
+            f"winner={winner.get('run_id')} "
+            f"losers={len(losers)}"
+        )
+        winner_line = _repair_native_sync_record_line("winner", winner)
+        if winner_line:
+            click.echo(winner_line)
+        _echo_repair_native_sync_record_lines(label="loser", records=losers)
+
+    for group in manual_review_groups:
+        group_key = group.get("group_key") if isinstance(group, dict) else {}
+        entries = group.get("entries") if isinstance(group, dict) else []
+        click.echo(
+            "MANUAL "
+            f"reason={group.get('reason')} "
+            f"tool={group_key.get('tool')} "
+            f"path={group_key.get('native_source_path')} "
+            f"start={group_key.get('start')} "
+            f"entries={len(entries)}"
+        )
+        _echo_repair_native_sync_record_lines(label="entry", records=entries)
+
+    for group in skipped_groups:
+        group_key = group.get("group_key") if isinstance(group, dict) else {}
+        entries = group.get("entries") if isinstance(group, dict) else []
+        click.echo(
+            "SKIP "
+            f"reason={group.get('reason')} "
+            f"tool={group_key.get('tool')} "
+            f"path={group_key.get('native_source_path')} "
+            f"start={group_key.get('start')} "
+            f"entries={len(entries)}"
+        )
+        _echo_repair_native_sync_record_lines(label="entry", records=entries)
+
+    should_apply = bool(apply and not dry_run)
+    rewritten_files = 0
+    rewritten_entries = 0
+
+    if should_apply:
+        removals_by_file: dict[Path, set[int]] = {}
+        for group in auto_repair_groups:
+            loser_records = group.get("loser_records") if isinstance(group, dict) else []
+            for record in loser_records:
+                if not isinstance(record, dict):
+                    continue
+                entries_path = record.get("entries_path")
+                line_index = record.get("line_index")
+                if not isinstance(entries_path, Path):
+                    continue
+                if not isinstance(line_index, int):
+                    continue
+                removals_by_file.setdefault(entries_path, set()).add(line_index)
+
+        for entries_path in sorted(removals_by_file):
+            line_indexes = removals_by_file[entries_path]
+            if not line_indexes:
+                continue
+            backup_path = entries_path.with_suffix(".jsonl.bak")
+            shutil.copy2(entries_path, backup_path)
+            rewritten = _rewrite_entries_file_removing_lines(
+                entries_path=entries_path,
+                remove_line_indexes=line_indexes,
+            )
+            if rewritten:
+                rewritten_files += 1
+                rewritten_entries += len(line_indexes)
+
+    click.echo()
+    click.echo(
+        f"Summary: auto_repair_groups={len(auto_repair_groups)} "
+        f"manual_review_groups={len(manual_review_groups)} "
+        f"skipped_groups={len(skipped_groups)} "
+        f"rewritten_files={rewritten_files} "
+        f"rewritten_entries={rewritten_entries}"
+    )
 
 
 @changelog_cli.command("refresh-metadata")

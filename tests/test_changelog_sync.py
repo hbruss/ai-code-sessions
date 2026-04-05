@@ -68,19 +68,21 @@ def _write_claude_session(
     )
 
 
-def test_native_session_identity_uses_tool_session_and_time_bounds(tmp_path):
+def test_native_session_identity_excludes_end_and_keeps_session_id(tmp_path):
     path = tmp_path / "rollout-abc.jsonl"
     identity = core._canonical_session_identity_for_source(
         tool="codex",
         source_jsonl=path,
         start="2026-01-01T00:00:00Z",
         end="2026-01-01T00:05:00.000000Z",
+        session_id="codex-session-123",
     )
 
     assert identity["tool"] == "codex"
+    assert identity["session_id"] == "codex-session-123"
     assert identity["native_source_path"] == str(path.resolve())
     assert identity["start"] == "2026-01-01T00:00:00+00:00"
-    assert identity["end"] == "2026-01-01T00:05:00+00:00"
+    assert "end" not in identity
 
 
 def test_native_session_identity_normalizes_equivalent_timestamp_formats(tmp_path):
@@ -90,15 +92,42 @@ def test_native_session_identity_normalizes_equivalent_timestamp_formats(tmp_pat
         source_jsonl=path,
         start="2026-01-01T00:00:00Z",
         end="2026-01-01T00:05:00.0Z",
+        session_id="codex-session-123",
     )
     identity_from_offset = core._canonical_session_identity_for_source(
         tool="codex",
         source_jsonl=path,
         start="2026-01-01T00:00:00+00:00",
         end="2026-01-01T00:05:00.000000+00:00",
+        session_id="codex-session-123",
     )
 
     assert identity_from_z == identity_from_offset
+
+
+def test_session_identity_key_prefers_session_id():
+    key = core._session_identity_key(
+        {
+            "tool": "codex",
+            "session_id": "codex-session-123",
+            "native_source_path": "/tmp/a.jsonl",
+            "start": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert key == ("session_id", "codex", "codex-session-123")
+
+
+def test_session_identity_key_falls_back_to_path_and_start():
+    key = core._session_identity_key(
+        {
+            "tool": "codex",
+            "native_source_path": "/tmp/a.jsonl",
+            "start": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert key == ("path_start", "codex", "/tmp/a.jsonl", "2026-01-01T00:00:00+00:00")
 
 
 def test_entry_session_identity_recanonicalizes_source_identity_and_allows_null_transcript_fields(tmp_path):
@@ -194,32 +223,252 @@ def test_generate_and_append_changelog_entry_records_source_metadata(tmp_path, m
     )
 
 
-def test_preview_changelog_append_status_reports_existing_entries(tmp_path, monkeypatch):
+def test_preview_changelog_append_status_returns_existing_run_id_when_session_end_grows(tmp_path, monkeypatch):
     project_root = tmp_path / "repo"
     project_root.mkdir()
     session_dir = tmp_path / ".codex" / "sessions" / "session-1"
     session_dir.mkdir(parents=True)
 
     source_jsonl = tmp_path / "rollout-abc.jsonl"
-    source_jsonl.write_text("{}", encoding="utf-8")
+    _write_jsonl(
+        source_jsonl,
+        [
+            {
+                "type": "session_meta",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(project_root),
+                    "id": "codex-session-123",
+                },
+            },
+            {"type": "event_msg", "timestamp": "2026-01-01T00:05:00Z"},
+        ],
+    )
     source_match_json = tmp_path / "source_match.json"
     source_match_json.write_text("{}", encoding="utf-8")
+
+    entries_path = project_root / ".changelog" / "tester" / "entries.jsonl"
+    existing_run_id = "existing-run-id-1"
+    _write_jsonl(
+        entries_path,
+        [
+            {
+                "schema_version": core.CHANGELOG_ENTRY_SCHEMA_VERSION,
+                "run_id": existing_run_id,
+                "created_at": "2026-01-01T00:01:00+00:00",
+                "tool": "codex",
+                "actor": "tester",
+                "project": project_root.name,
+                "project_root": str(project_root),
+                "label": "Test",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_dir": str(session_dir.resolve()),
+                "continuation_of_run_id": None,
+                "transcript": {
+                    "output_dir": None,
+                    "index_html": None,
+                    "source_jsonl": str(source_jsonl.resolve()),
+                    "source_match_json": None,
+                },
+                "source": {
+                    "kind": "native_session",
+                    "identity": {
+                        "tool": "codex",
+                        "session_id": "codex-session-123",
+                        "native_source_path": str(source_jsonl.resolve()),
+                        "start": "2026-01-01T00:00:00+00:00",
+                        "end": "2026-01-01T00:05:00+00:00",
+                    },
+                },
+                "summary": "old summary",
+                "bullets": ["old bullet"],
+                "tags": ["old"],
+                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+                "tests": [],
+                "commits": [],
+                "notes": None,
+            }
+        ],
+    )
+
+    preview_run_id, preview_status = core._preview_changelog_append_status(
+        tool="codex",
+        project_root=project_root,
+        session_dir=session_dir,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:10:00+00:00",
+        source_jsonl=source_jsonl,
+        source_match_json=source_match_json,
+        actor="tester",
+    )
+
+    assert preview_run_id == existing_run_id
+    assert preview_status == "exists"
+
+
+def test_preview_changelog_append_status_checks_other_actor_entry_files(tmp_path):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    session_dir = tmp_path / ".codex" / "sessions" / "session-1"
+    session_dir.mkdir(parents=True)
+
+    source_jsonl = tmp_path / "rollout-abc.jsonl"
+    _write_jsonl(
+        source_jsonl,
+        [
+            {
+                "type": "session_meta",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(project_root),
+                    "id": "codex-session-123",
+                },
+            },
+            {"type": "event_msg", "timestamp": "2026-01-01T00:05:00Z"},
+        ],
+    )
+
+    other_actor_entries = project_root / ".changelog" / "other-user" / "entries.jsonl"
+    existing_run_id = "existing-run-id-other-actor"
+    _write_jsonl(
+        other_actor_entries,
+        [
+            {
+                "schema_version": core.CHANGELOG_ENTRY_SCHEMA_VERSION,
+                "run_id": existing_run_id,
+                "created_at": "2026-01-01T00:01:00+00:00",
+                "tool": "codex",
+                "actor": "other-user",
+                "project": project_root.name,
+                "project_root": str(project_root),
+                "label": "Test",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_dir": str(session_dir.resolve()),
+                "continuation_of_run_id": None,
+                "transcript": {
+                    "output_dir": None,
+                    "index_html": None,
+                    "source_jsonl": str(source_jsonl.resolve()),
+                    "source_match_json": None,
+                },
+                "source": {
+                    "kind": "native_session",
+                    "identity": {
+                        "tool": "codex",
+                        "session_id": "codex-session-123",
+                        "native_source_path": str(source_jsonl.resolve()),
+                        "start": "2026-01-01T00:00:00+00:00",
+                    },
+                },
+                "summary": "old summary",
+                "bullets": ["old bullet"],
+                "tags": ["old"],
+                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+                "tests": [],
+                "commits": [],
+                "notes": None,
+            }
+        ],
+    )
+
+    preview_run_id, preview_status = core._preview_changelog_append_status(
+        tool="codex",
+        project_root=project_root,
+        session_dir=session_dir,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:10:00+00:00",
+        source_jsonl=source_jsonl,
+        source_match_json=None,
+        actor="current-user",
+    )
+
+    assert preview_run_id == existing_run_id
+    assert preview_status == "exists"
+
+
+def test_generate_and_append_changelog_entry_updates_existing_sync_owned_row(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    session_dir = tmp_path / ".codex" / "sessions" / "session-1"
+    session_dir.mkdir(parents=True)
+    source_jsonl = tmp_path / "rollout-abc.jsonl"
+    _write_jsonl(
+        source_jsonl,
+        [
+            {
+                "type": "session_meta",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(project_root),
+                    "id": "codex-session-123",
+                },
+            },
+            {"type": "event_msg", "timestamp": "2026-01-01T00:10:00Z"},
+        ],
+    )
+    entries_path = project_root / ".changelog" / "tester" / "entries.jsonl"
+    _write_jsonl(
+        entries_path,
+        [
+            {
+                "schema_version": core.CHANGELOG_ENTRY_SCHEMA_VERSION,
+                "run_id": "existing-run-id-1",
+                "created_at": "2025-12-31T23:59:59+00:00",
+                "tool": "codex",
+                "actor": "tester",
+                "project": project_root.name,
+                "project_root": str(project_root),
+                "label": "Test",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_dir": str(session_dir.resolve()),
+                "continuation_of_run_id": None,
+                "transcript": {
+                    "output_dir": None,
+                    "index_html": None,
+                    "source_jsonl": str(source_jsonl.resolve()),
+                    "source_match_json": None,
+                },
+                "source": {
+                    "kind": "native_session",
+                    "identity": {
+                        "tool": "codex",
+                        "native_source_path": str(source_jsonl.resolve()),
+                        "start": "2026-01-01T00:00:00+00:00",
+                        "end": "2026-01-01T00:05:00+00:00",
+                    },
+                },
+                "summary": "old summary",
+                "bullets": ["old bullet"],
+                "tags": ["old"],
+                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+                "tests": ["old test"],
+                "commits": ["old commit"],
+                "notes": "old notes",
+            }
+        ],
+    )
 
     monkeypatch.setattr(
         core,
         "_build_changelog_digest",
         lambda **_: {
             "delta": {
-                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
-                "tests": [],
-                "commits": [],
+                "touched_files": {"created": ["a.py"], "modified": [], "deleted": [], "moved": []},
+                "tests": ["new test"],
+                "commits": ["new commit"],
             }
         },
     )
     monkeypatch.setattr(
         core,
         "_run_codex_changelog_evaluator",
-        lambda **_: {"summary": "ok", "bullets": ["did thing"], "tags": [], "notes": None},
+        lambda **_: {"summary": "new summary", "bullets": ["new bullet"], "tags": ["new"], "notes": "new notes"},
     )
 
     ok, run_id, status = core._generate_and_append_changelog_entry(
@@ -229,33 +478,146 @@ def test_preview_changelog_append_status_reports_existing_entries(tmp_path, monk
         project_root=project_root,
         session_dir=session_dir,
         start="2026-01-01T00:00:00+00:00",
-        end="2026-01-01T00:05:00+00:00",
+        end="2026-01-01T00:10:00+00:00",
         source_jsonl=source_jsonl,
-        source_match_json=source_match_json,
+        source_match_json=None,
         actor="tester",
         evaluator="codex",
         evaluator_model=None,
         claude_max_thinking_tokens=None,
         continuation_of_run_id=None,
         halt_on_429=False,
+        transcript_output_dir=None,
+        transcript_index_html=None,
     )
 
     assert ok is True
-    assert status == "appended"
+    assert status == "updated"
+    assert run_id == "existing-run-id-1"
 
-    preview_run_id, preview_status = core._preview_changelog_append_status(
+    rows = [json.loads(line) for line in entries_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry["run_id"] == "existing-run-id-1"
+    assert entry["created_at"] == "2025-12-31T23:59:59+00:00"
+    assert entry["end"] == "2026-01-01T00:10:00+00:00"
+    assert entry["summary"] == "new summary"
+    assert entry["bullets"] == ["new bullet"]
+    assert entry["tags"] == ["new"]
+    assert entry["touched_files"] == {"created": ["a.py"], "modified": [], "deleted": [], "moved": []}
+    assert entry["tests"] == ["new test"]
+    assert entry["commits"] == ["new commit"]
+    assert entry["notes"] == "new notes"
+
+
+def test_generate_and_append_changelog_entry_does_not_update_export_owned_row(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    session_dir = tmp_path / ".codex" / "sessions" / "session-1"
+    session_dir.mkdir(parents=True)
+    source_jsonl = tmp_path / "rollout-abc.jsonl"
+    _write_jsonl(
+        source_jsonl,
+        [
+            {
+                "type": "session_meta",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(project_root),
+                    "id": "codex-session-123",
+                },
+            },
+            {"type": "event_msg", "timestamp": "2026-01-01T00:10:00Z"},
+        ],
+    )
+    entries_path = project_root / ".changelog" / "tester" / "entries.jsonl"
+    _write_jsonl(
+        entries_path,
+        [
+            {
+                "schema_version": core.CHANGELOG_ENTRY_SCHEMA_VERSION,
+                "run_id": "existing-run-id-1",
+                "created_at": "2025-12-31T23:59:59+00:00",
+                "tool": "codex",
+                "actor": "tester",
+                "project": project_root.name,
+                "project_root": str(project_root),
+                "label": "Test",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_dir": str(session_dir.resolve()),
+                "continuation_of_run_id": None,
+                "transcript": {
+                    "output_dir": str(session_dir.resolve()),
+                    "index_html": str((session_dir / "index.html").resolve()),
+                    "source_jsonl": str(source_jsonl.resolve()),
+                    "source_match_json": None,
+                },
+                "source": {
+                    "kind": "native_session",
+                    "identity": {
+                        "tool": "codex",
+                        "session_id": "codex-session-123",
+                        "native_source_path": str(source_jsonl.resolve()),
+                        "start": "2026-01-01T00:00:00+00:00",
+                    },
+                },
+                "summary": "old summary",
+                "bullets": ["old bullet"],
+                "tags": ["old"],
+                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+                "tests": [],
+                "commits": [],
+                "notes": None,
+            }
+        ],
+    )
+
+    monkeypatch.setattr(
+        core,
+        "_build_changelog_digest",
+        lambda **_: {
+            "delta": {
+                "touched_files": {"created": ["a.py"], "modified": [], "deleted": [], "moved": []},
+                "tests": ["new test"],
+                "commits": ["new commit"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "_run_codex_changelog_evaluator",
+        lambda **_: {"summary": "new summary", "bullets": ["new bullet"], "tags": ["new"], "notes": "new notes"},
+    )
+
+    ok, run_id, status = core._generate_and_append_changelog_entry(
         tool="codex",
+        label="Test",
+        cwd=str(project_root),
         project_root=project_root,
         session_dir=session_dir,
         start="2026-01-01T00:00:00+00:00",
-        end="2026-01-01T00:05:00+00:00",
+        end="2026-01-01T00:10:00+00:00",
         source_jsonl=source_jsonl,
-        source_match_json=source_match_json,
+        source_match_json=None,
         actor="tester",
+        evaluator="codex",
+        evaluator_model=None,
+        claude_max_thinking_tokens=None,
+        continuation_of_run_id=None,
+        halt_on_429=False,
+        transcript_output_dir=None,
+        transcript_index_html=None,
     )
 
-    assert preview_run_id == run_id
-    assert preview_status == "exists"
+    assert ok is False
+    assert status == "exists"
+    assert run_id == "existing-run-id-1"
+
+    rows = [json.loads(line) for line in entries_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["summary"] == "old summary"
 
 
 def test_discover_native_sessions_filters_to_overlapping_window_and_sorts_newest_first(tmp_path, monkeypatch):

@@ -20,3 +20,11 @@
 
 - When adding a new changelog workflow, do not assume evaluator-default behavior can diverge from existing `ctx`/export flows. If the product already supports config/env-driven evaluator defaults, every new changelog entrypoint must honor the same precedence unless the user explicitly asks for a different model.
 - When a setting can come from per-repo config, do not resolve it from the invocation context before the target repo is known. In multi-repo sync flows, derive repo-scoped config only after each session resolves to its destination project.
+
+## 2026-04-03
+
+- When Russ says subagents must not use MCP, treat that as an execution constraint, not a preference. Close any lingering MCP-backed agents, and every new subagent prompt must explicitly forbid MCP/web/app tools and limit work to local shell/file editing only.
+
+## 2026-04-04
+
+- When reporting `repair-native-sync` work, do not imply the repair was limited to one actor unless `--actor` was actually used. The default command scans all actor directories in the target repo; if only one actor file was rewritten, say that explicitly and verify the other actor dirs separately before concluding they were untouched because of scope.

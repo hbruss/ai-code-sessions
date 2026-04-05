@@ -92,9 +92,27 @@ Key behaviors:
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
 - If repo evidence is too weak, the session is reported as unresolved and skipped
-- The command is idempotent, so you can run it after every session
+- Native-session sync uses stable logical session identity, so re-running sync for the same live session does not append duplicate rows
+- Sync-owned native-session rows are updated in place as the same session grows
+- If a richer export-owned row already represents that session, sync leaves it alone instead of replacing it
 
 Sync-generated entries still include a `transcript` object, but `transcript.output_dir`, `transcript.index_html`, and `transcript.source_match_json` may be `null` when no HTML export exists yet. `transcript.source_jsonl` remains the required on-disk source of truth.
+
+To inspect or clean historical duplicate native-sync rows already written before this fix:
+
+```bash
+# Report only
+ais changelog repair-native-sync
+
+# Target one repo and actor
+ais changelog repair-native-sync --project-root /path/to/repo --actor your-username
+
+# Apply only the high-confidence repairs
+ais changelog repair-native-sync --project-root /path/to/repo --apply
+```
+
+`repair-native-sync` only auto-repairs high-confidence groups where `tool`, native source path, and session start all match. Cross-actor duplicates and same-path different-start groups are reported for manual review and are not rewritten automatically.
+The default report prints each group’s headline plus indented winner/loser or entry metadata, including ownership, actor, timestamps, and source file location, so you can inspect proposed repairs without digging into code.
 
 ---
 
@@ -172,13 +190,13 @@ Codex CLI documents its model list (for example, `gpt-5.2-codex` and `gpt-5.1-co
 
 ### Claude
 
-Uses Claude Code CLI with Opus and 8192 thinking tokens (default):
+Uses Claude Code CLI with `opus[1m]` and 8192 thinking tokens by default:
 
 > **Note:** When using Claude for changelog evaluation, `ai-code-sessions` disables MCP servers for the headless `claude --print` run (via `--strict-mcp-config` and an empty `--mcp-config`). This avoids slow/flaky MCP startup and makes changelog generation more deterministic.
 
 ```bash
 export CTX_CHANGELOG_EVALUATOR="claude"
-export CTX_CHANGELOG_MODEL="opus"
+export CTX_CHANGELOG_MODEL=""  # Optional; blank uses the Claude long-context default
 export CTX_CHANGELOG_CLAUDE_THINKING_TOKENS="8192"
 ```
 
@@ -187,7 +205,7 @@ Or in config:
 ```toml
 [changelog]
 evaluator = "claude"
-model = "opus"
+model = ""  # Optional; blank uses the Claude long-context default (`opus[1m]`)
 claude_thinking_tokens = 8192
 ```
 
@@ -198,7 +216,7 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
 | Evaluator | Speed | Cost | Quality |
 |-----------|-------|------|---------|
 | Codex (default `gpt-5.2`) | Fast | Lower | Good summarization |
-| Claude (default `opus`) | Slower | Higher | More detailed analysis |
+| Claude (default `opus[1m]`) | Slower | Higher | More detailed analysis |
 
 ---
 
@@ -211,12 +229,20 @@ See the [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-co
    - Tool outputs (only for errors—success output is omitted to save tokens)
 
 2. **Evaluator Invocation**: The digest is passed to the evaluator (Codex or Claude) with a prompt asking for structured JSON output.
+   - Codex receives the prompt through its normal CLI flow
+   - Claude receives the prompt through a non-argv transport so large prompt bodies do not hit shell argument-size limits first
 
 3. **Retry on Overflow**: If the context window overflows, the evaluator retries with a smaller "budget" digest that aggressively truncates content.
+   - Claude first attempts the full prompt
+   - If Claude times out or the prompt is too large, `ai-code-sessions` archives the failed full prompt under `.archive/changelog-eval/` and retries once with a budget digest
+   - If the retry also fails, the budget prompt is archived too for debugging
 
 4. **Deduplication**: Each entry gets a content-based ID. If you re-run export on the same session, duplicate entries are detected and skipped.
 
-5. **Append-Only**: Entries are appended to `entries.jsonl`, never overwritten. This creates a reliable audit trail.
+5. **Storage Behavior**:
+   - Export and backfill flows append new rows to `entries.jsonl`
+   - Native-session sync keeps one canonical sync-owned row per logical live session and updates that row in place until the session is represented completely
+   - Historical duplicate cleanup is handled separately by `ais changelog repair-native-sync`, which is report-only unless `--apply` is provided
 
 ---
 

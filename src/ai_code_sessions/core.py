@@ -1088,19 +1088,23 @@ def _canonicalize_iso8601_utc(value: str) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def _canonical_session_identity_for_source(*, tool: str, source_jsonl: Path, start: str, end: str) -> dict:
+def _canonical_session_identity_for_source(
+    *, tool: str, source_jsonl: Path, start: str, end: str, session_id: str | None = None
+) -> dict:
     """Build the canonical identity for a native session source."""
 
     tool_value = (tool or "unknown").strip().lower() if isinstance(tool, str) else "unknown"
     start_value = _canonicalize_iso8601_utc(start) or (start.strip() if isinstance(start, str) else "")
-    end_value = _canonicalize_iso8601_utc(end) or (end.strip() if isinstance(end, str) else "")
+    session_id_value = session_id.strip() if isinstance(session_id, str) else ""
 
-    return {
+    identity = {
         "tool": tool_value,
         "native_source_path": str(Path(source_jsonl).resolve()),
         "start": start_value,
-        "end": end_value,
     }
+    if session_id_value:
+        identity["session_id"] = session_id_value
+    return identity
 
 
 def _entry_session_identity(entry: dict) -> dict | None:
@@ -1117,6 +1121,7 @@ def _entry_session_identity(entry: dict) -> dict | None:
             identity_source_jsonl = identity.get("native_source_path")
             identity_start = identity.get("start")
             identity_end = identity.get("end")
+            identity_session_id = identity.get("session_id")
             if (
                 isinstance(identity_tool, str)
                 and identity_tool.strip()
@@ -1124,16 +1129,23 @@ def _entry_session_identity(entry: dict) -> dict | None:
                 and identity_source_jsonl.strip()
                 and isinstance(identity_start, str)
                 and identity_start.strip()
-                and isinstance(identity_end, str)
-                and identity_end.strip()
             ):
                 canonical_identity = _canonical_session_identity_for_source(
                     tool=identity_tool,
                     source_jsonl=Path(identity_source_jsonl),
                     start=identity_start,
-                    end=identity_end,
+                    end=identity_end if isinstance(identity_end, str) else "",
+                    session_id=identity_session_id if isinstance(identity_session_id, str) else None,
                 )
-                if canonical_identity["start"] and canonical_identity["end"]:
+                if canonical_identity["start"]:
+                    if "session_id" not in canonical_identity:
+                        transcript_source_path = _entry_transcript_source_jsonl(entry)
+                        discovered_session_id = _native_session_id_for_source(
+                            tool=canonical_identity["tool"],
+                            source_jsonl=transcript_source_path,
+                        )
+                        if discovered_session_id is not None:
+                            canonical_identity["session_id"] = discovered_session_id
                     return canonical_identity
 
     tool = entry.get("tool")
@@ -1197,12 +1209,39 @@ def _canonical_session_identity_from_transcript(
             end=end,
         )
 
+    transcript_source_path = Path(source_jsonl).expanduser() if isinstance(source_jsonl, (str, Path)) else None
+    session_id = _native_session_id_for_source(tool=tool, source_jsonl=transcript_source_path)
+    if session_id is None:
+        session_id = _native_session_id_for_source(tool=tool, source_jsonl=native_source_path)
+
     return _canonical_session_identity_for_source(
         tool=tool,
         source_jsonl=native_source_path,
         start=start,
         end=end,
+        session_id=session_id,
     )
+
+
+def _native_session_id_for_source(*, tool: str, source_jsonl: Path | None) -> str | None:
+    if not isinstance(source_jsonl, Path):
+        return None
+    source_path = source_jsonl.expanduser()
+    if not source_path.exists():
+        return None
+    normalized_tool = (tool or "").strip().lower()
+    try:
+        if normalized_tool == "codex":
+            _, _, _, session_id = _codex_rollout_session_times(source_path)
+        elif normalized_tool == "claude":
+            _, _, _, session_id = _claude_session_times(source_path)
+        else:
+            return None
+    except Exception:
+        return None
+    if isinstance(session_id, str) and session_id.strip():
+        return session_id.strip()
+    return None
 
 
 def _native_source_path_from_match_metadata(source_match_json: str | Path | None) -> Path | None:
@@ -1286,16 +1325,20 @@ def _resolve_native_source_path_from_transcript(*, tool: str, source_jsonl: Path
     return matches[0]
 
 
-def _session_identity_key(identity: dict | None) -> tuple[str, str, str, str] | None:
+def _session_identity_key(identity: dict | None) -> tuple[str, ...] | None:
     if not isinstance(identity, dict):
         return None
     tool = identity.get("tool")
+    session_id = identity.get("session_id")
     native_source_path = identity.get("native_source_path")
     start = identity.get("start")
-    end = identity.get("end")
-    if not all(isinstance(value, str) and value.strip() for value in (tool, native_source_path, start, end)):
+    if not isinstance(tool, str) or not tool.strip():
         return None
-    return tool, native_source_path, start, end
+    if isinstance(session_id, str) and session_id.strip():
+        return "session_id", tool, session_id
+    if not all(isinstance(value, str) and value.strip() for value in (native_source_path, start)):
+        return None
+    return "path_start", tool, native_source_path, start
 
 
 def _looks_truncated(text: str) -> bool:
@@ -1456,8 +1499,8 @@ def _load_existing_run_ids(entries_path: Path) -> set[str]:
     return run_ids
 
 
-def _load_existing_session_identity_keys(entries_path: Path) -> set[tuple[str, str, str, str]]:
-    identities: set[tuple[str, str, str, str]] = set()
+def _load_existing_session_identity_keys(entries_path: Path) -> set[tuple[str, ...]]:
+    identities: set[tuple[str, ...]] = set()
     if not entries_path.exists():
         return identities
     try:
@@ -1479,6 +1522,55 @@ def _load_existing_session_identity_keys(entries_path: Path) -> set[tuple[str, s
     return identities
 
 
+def _find_existing_entry_by_run_id(entry_paths: tuple[Path, ...], run_id: str) -> dict | None:
+    if not isinstance(run_id, str) or not run_id.strip():
+        return None
+    for entry_path in entry_paths:
+        if not entry_path.exists():
+            continue
+        try:
+            with _JSONL_IO_LOCK:
+                with open(entry_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if obj.get("run_id") == run_id:
+                            return obj
+        except OSError:
+            continue
+    return None
+
+
+def _find_existing_entry_by_session_identity(
+    entry_paths: tuple[Path, ...], identity_key: tuple[str, ...]
+) -> dict | None:
+    for entry_path in entry_paths:
+        if not entry_path.exists():
+            continue
+        try:
+            with _JSONL_IO_LOCK:
+                with open(entry_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        entry_identity_key = _session_identity_key(_entry_session_identity(obj))
+                        if entry_identity_key == identity_key:
+                            return obj
+        except OSError:
+            continue
+    return None
+
+
 def _preview_changelog_append_status(
     *,
     tool: str,
@@ -1492,7 +1584,6 @@ def _preview_changelog_append_status(
 ) -> tuple[str | None, str]:
     changelog_dir = project_root / ".changelog"
     actor_value = actor or _detect_actor(project_root=project_root)
-    actor_slug = _slugify_actor(actor_value)
     entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
     session_dir_abs = session_dir.resolve()
     run_id = _compute_run_id(
@@ -1516,20 +1607,287 @@ def _preview_changelog_append_status(
     )
     source_identity_key = _session_identity_key(source_identity)
 
-    entry_paths = (
-        entries_path,
-        changelog_dir / "entries.jsonl",
-        changelog_dir / "actors" / actor_slug / "entries.jsonl",
-    )
-    existing = (
-        _load_existing_run_ids(entries_path)
-        | _load_existing_run_ids(changelog_dir / "entries.jsonl")
-        | _load_existing_run_ids(changelog_dir / "actors" / actor_slug / "entries.jsonl")
-    )
-    existing_identity_keys = set().union(*(_load_existing_session_identity_keys(path) for path in entry_paths))
-    if run_id in existing or (source_identity_key is not None and source_identity_key in existing_identity_keys):
+    entry_paths = _changelog_entry_paths(changelog_dir=changelog_dir, actor=actor_value)
+    existing_by_run_id = _find_existing_entry_by_run_id(entry_paths, run_id)
+    if existing_by_run_id is not None:
         return run_id, "exists"
+    if source_identity_key is not None:
+        existing_by_identity = _find_existing_entry_by_session_identity(entry_paths, source_identity_key)
+        if existing_by_identity is not None:
+            existing_run_id = existing_by_identity.get("run_id")
+            if isinstance(existing_run_id, str) and existing_run_id.strip():
+                return existing_run_id, "exists"
+            return run_id, "exists"
     return run_id, "appended"
+
+
+def _is_sync_owned_changelog_entry(entry: dict | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    source = entry.get("source")
+    transcript = entry.get("transcript")
+    if not isinstance(source, dict) or source.get("kind") != "native_session":
+        return False
+    if not isinstance(transcript, dict):
+        return False
+    source_jsonl = transcript.get("source_jsonl")
+    return (
+        isinstance(source_jsonl, str)
+        and source_jsonl.strip() != ""
+        and transcript.get("output_dir") is None
+        and transcript.get("index_html") is None
+    )
+
+
+def _native_sync_grouping_key(entry: dict) -> tuple[str, str, str] | None:
+    source = entry.get("source")
+    if not isinstance(source, dict) or source.get("kind") != "native_session":
+        return None
+    identity = _entry_session_identity(entry)
+    if not isinstance(identity, dict):
+        return None
+    tool = identity.get("tool")
+    native_source_path = identity.get("native_source_path")
+    start = identity.get("start")
+    if not all(isinstance(value, str) and value.strip() for value in (tool, native_source_path, start)):
+        return None
+    normalized_start = _canonicalize_iso8601_utc(start)
+    if not isinstance(normalized_start, str) or not normalized_start.strip():
+        return None
+    return tool, native_source_path, normalized_start
+
+
+def _native_sync_grouping_path_key(entry: dict) -> tuple[str, str] | None:
+    source = entry.get("source")
+    if not isinstance(source, dict) or source.get("kind") != "native_session":
+        return None
+    identity = _entry_session_identity(entry)
+    if not isinstance(identity, dict):
+        return None
+    tool = identity.get("tool")
+    native_source_path = identity.get("native_source_path")
+    if not (
+        isinstance(tool, str) and tool.strip() and isinstance(native_source_path, str) and native_source_path.strip()
+    ):
+        return None
+    return tool, native_source_path
+
+
+def _native_sync_ownership_rank(entry: dict) -> int:
+    if _is_sync_owned_changelog_entry(entry):
+        return 0
+    transcript = entry.get("transcript")
+    source = entry.get("source")
+    if not isinstance(source, dict) or source.get("kind") != "native_session":
+        return -1
+    if not isinstance(transcript, dict):
+        return -1
+    source_jsonl = transcript.get("source_jsonl")
+    if isinstance(source_jsonl, str) and source_jsonl.strip():
+        return 1
+    return -1
+
+
+def _native_sync_sortable_timestamp(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return _canonicalize_iso8601_utc(value) or ""
+
+
+def _native_sync_entry_winner_sort_key(record: dict) -> tuple[int, str, str, str]:
+    entry = record.get("entry") if isinstance(record, dict) else None
+    if not isinstance(entry, dict):
+        return (-1, "", "", "")
+    run_id = entry.get("run_id")
+    return (
+        _native_sync_ownership_rank(entry),
+        _native_sync_sortable_timestamp(entry.get("end")),
+        _native_sync_sortable_timestamp(entry.get("created_at")),
+        run_id if isinstance(run_id, str) else "",
+    )
+
+
+def _native_sync_record_metadata(record: dict) -> dict:
+    entry = record.get("entry") if isinstance(record, dict) else {}
+    if not isinstance(entry, dict):
+        entry = {}
+    return {
+        "run_id": entry.get("run_id"),
+        "actor": record.get("actor"),
+        "entries_path": str(record.get("entries_path")) if isinstance(record.get("entries_path"), Path) else None,
+        "line_index": record.get("line_index"),
+        "ownership": "sync" if _is_sync_owned_changelog_entry(entry) else "export",
+        "end": _native_sync_sortable_timestamp(entry.get("end")),
+        "created_at": _native_sync_sortable_timestamp(entry.get("created_at")),
+    }
+
+
+def _group_native_sync_duplicates_for_repair(*, project_root: Path, actor: str | None = None) -> dict:
+    changelog_dir = Path(project_root) / ".changelog"
+    if not changelog_dir.exists():
+        return {
+            "auto_repair_groups": [],
+            "manual_review_groups": [],
+            "skipped_groups": [],
+        }
+
+    if actor:
+        specific = changelog_dir / _slugify_actor(actor)
+        actor_dirs = [specific] if specific.exists() else []
+    else:
+        actor_dirs = [path for path in changelog_dir.iterdir() if path.is_dir()]
+
+    exact_groups: dict[tuple[str, str, str], list[dict]] = {}
+    path_groups: dict[tuple[str, str], list[dict]] = {}
+    skipped_groups: list[dict] = []
+
+    for actor_dir in sorted(actor_dirs):
+        entries_path = actor_dir / "entries.jsonl"
+        if not entries_path.exists():
+            continue
+        try:
+            raw_lines = entries_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        except OSError:
+            continue
+        for line_index, raw_line in enumerate(raw_lines):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("source")
+            if not isinstance(source, dict) or source.get("kind") != "native_session":
+                continue
+
+            record = {
+                "actor": actor_dir.name,
+                "entries_path": entries_path,
+                "line_index": line_index,
+                "entry": entry,
+            }
+
+            path_key = _native_sync_grouping_path_key(entry)
+            if path_key is not None:
+                path_groups.setdefault(path_key, []).append(record)
+
+            exact_key = _native_sync_grouping_key(entry)
+            if exact_key is None:
+                skipped_groups.append(
+                    {
+                        "group_key": None,
+                        "auto_repair": False,
+                        "reason": "incomplete_source_metadata",
+                        "winner": None,
+                        "losers": [],
+                        "entries": [_native_sync_record_metadata(record)],
+                    }
+                )
+                continue
+            exact_groups.setdefault(exact_key, []).append(record)
+
+    auto_repair_groups: list[dict] = []
+    manual_review_groups: list[dict] = []
+
+    for key in sorted(exact_groups):
+        records = exact_groups[key]
+        if len(records) < 2:
+            continue
+        actors = sorted({record["actor"] for record in records if isinstance(record.get("actor"), str)})
+        group_key = {"tool": key[0], "native_source_path": key[1], "start": key[2]}
+        if len(actors) > 1:
+            manual_review_groups.append(
+                {
+                    "group_key": group_key,
+                    "auto_repair": False,
+                    "reason": "cross_actor_duplicate_group",
+                    "winner": None,
+                    "losers": [],
+                    "entries": [_native_sync_record_metadata(record) for record in records],
+                    "entry_records": records,
+                }
+            )
+            continue
+
+        winner_record = max(records, key=_native_sync_entry_winner_sort_key)
+        loser_records = [record for record in records if record is not winner_record]
+        auto_repair_groups.append(
+            {
+                "group_key": group_key,
+                "auto_repair": True,
+                "reason": "same_actor_duplicate_group",
+                "winner": _native_sync_record_metadata(winner_record),
+                "losers": [_native_sync_record_metadata(record) for record in loser_records],
+                "entries": [_native_sync_record_metadata(record) for record in records],
+                "winner_record": winner_record,
+                "loser_records": loser_records,
+            }
+        )
+
+    for path_key in sorted(path_groups):
+        records = path_groups[path_key]
+        if len(records) < 2:
+            continue
+        starts = {
+            _native_sync_grouping_key(record["entry"])[2]
+            for record in records
+            if _native_sync_grouping_key(record["entry"]) is not None
+        }
+        if len(starts) <= 1:
+            continue
+        skipped_groups.append(
+            {
+                "group_key": {
+                    "tool": path_key[0],
+                    "native_source_path": path_key[1],
+                    "start": None,
+                },
+                "auto_repair": False,
+                "reason": "same_path_different_start",
+                "winner": None,
+                "losers": [],
+                "entries": [_native_sync_record_metadata(record) for record in records],
+            }
+        )
+
+    return {
+        "auto_repair_groups": auto_repair_groups,
+        "manual_review_groups": manual_review_groups,
+        "skipped_groups": skipped_groups,
+    }
+
+
+def _rewrite_entry_row_by_run_id(*, entries_path: Path, run_id: str, entry: dict) -> bool:
+    if not entries_path.exists():
+        return False
+    try:
+        with _JSONL_IO_LOCK:
+            lines = entries_path.read_text(encoding="utf-8").splitlines()
+            rewritten = False
+            output_lines: list[str] = []
+            for line in lines:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    output_lines.append(line)
+                    continue
+                if not rewritten and obj.get("run_id") == run_id:
+                    output_lines.append(json.dumps(entry, ensure_ascii=False))
+                    rewritten = True
+                else:
+                    output_lines.append(json.dumps(obj, ensure_ascii=False))
+            if not rewritten:
+                return False
+            entries_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+            return True
+    except OSError:
+        return False
 
 
 def _parse_relative_date(ref: str) -> datetime | None:
@@ -2016,6 +2374,38 @@ def _changelog_paths(*, changelog_dir: Path, actor: str) -> tuple[Path, Path]:
     actor_slug = _slugify_actor(actor)
     base = changelog_dir / actor_slug
     return base / "entries.jsonl", base / "failures.jsonl"
+
+
+def _changelog_entry_paths(*, changelog_dir: Path, actor: str | None = None) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        paths.append(path)
+
+    if actor:
+        current_entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor)
+        add(current_entries_path)
+        add(changelog_dir / "actors" / _slugify_actor(actor) / "entries.jsonl")
+
+    add(changelog_dir / "entries.jsonl")
+
+    if changelog_dir.exists():
+        for child in sorted(changelog_dir.iterdir()):
+            if child.is_dir() and child.name != "actors":
+                add(child / "entries.jsonl")
+
+        legacy_actors_dir = changelog_dir / "actors"
+        if legacy_actors_dir.exists():
+            for child in sorted(legacy_actors_dir.iterdir()):
+                if child.is_dir():
+                    add(child / "entries.jsonl")
+
+    return tuple(paths)
 
 
 def _parse_apply_patch_file_ops(patch_text: str) -> dict:
@@ -2993,7 +3383,7 @@ def _run_claude_changelog_evaluator(
             "Install and authenticate Claude Code, then retry."
         )
 
-    model = model or "opus"
+    model = model or "opus[1m]"
     max_thinking_tokens = 8192 if max_thinking_tokens is None else max_thinking_tokens
 
     args: list[str] = [
@@ -3015,13 +3405,13 @@ def _run_claude_changelog_evaluator(
         model,
         "--max-thinking-tokens",
         str(max_thinking_tokens),
-        prompt,
     ]
 
     try:
         proc = subprocess.run(
             args,
             cwd=str(cd) if cd else None,
+            input=prompt,
             text=True,
             capture_output=True,
             timeout=timeout_seconds,
@@ -3083,6 +3473,84 @@ def _build_codex_changelog_prompt(*, digest: dict) -> str:
         f"{json.dumps(digest, ensure_ascii=False, indent=2)}\n"
         "DIGEST_JSON_END\n"
     )
+
+
+def _changelog_prompt_artifact_path(*, project_root: Path, run_id: str, variant: str) -> Path:
+    root = Path(project_root).expanduser().resolve()
+    tmp_dir = (root / ".tmp" / "changelog-eval").resolve()
+    safe_run_id = _sanitize_changelog_artifact_component(run_id)
+    safe_variant = _sanitize_changelog_artifact_component(variant)
+    candidate = (tmp_dir / f"{safe_run_id}-{safe_variant}-prompt.txt").resolve()
+    if not candidate.is_relative_to(root):
+        raise ValueError(f"Prompt artifact path escaped project_root: {candidate}")
+    return candidate
+
+
+def _sanitize_changelog_artifact_component(value: str) -> str:
+    component = (value or "").strip()
+    if not component:
+        return "unknown"
+    sanitized = re.sub(r"[\\/]+", "_", component)
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", sanitized)
+    sanitized = re.sub(r"_+", "_", sanitized)
+    sanitized = sanitized.strip("._-")
+    return sanitized or "unknown"
+
+
+def _write_changelog_prompt_artifact(*, project_root: Path, run_id: str, variant: str, prompt: str) -> Path:
+    path = _changelog_prompt_artifact_path(project_root=project_root, run_id=run_id, variant=variant)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(prompt, encoding="utf-8")
+    return path
+
+
+def _archive_failed_changelog_prompt(*, project_root: Path, prompt_path: Path) -> Path:
+    root = Path(project_root).expanduser().resolve()
+    source = _validated_changelog_temp_artifact_path(project_root=root, prompt_path=prompt_path)
+
+    archive_dir = (root / ".archive" / "changelog-eval").resolve()
+    if not archive_dir.is_relative_to(root):
+        raise ValueError(f"Archive directory escaped project_root: {archive_dir}")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived = (archive_dir / source.name).resolve()
+    if archived.exists():
+        for index in itertools.count(1):
+            candidate = (archive_dir / f"{source.stem}-{index}{source.suffix}").resolve()
+            if not candidate.exists():
+                archived = candidate
+                break
+    if not archived.is_relative_to(archive_dir) or not archived.is_relative_to(root):
+        raise ValueError(f"Archive path escaped project_root: {archived}")
+    shutil.move(str(source), str(archived))
+    return archived
+
+
+def _validated_changelog_temp_artifact_path(*, project_root: Path, prompt_path: Path) -> Path:
+    root = Path(project_root).expanduser().resolve()
+    expected_tmp_dir = (root / ".tmp" / "changelog-eval").resolve()
+    if not expected_tmp_dir.is_relative_to(root):
+        raise ValueError(f"Temp artifact directory escaped project_root: {expected_tmp_dir}")
+
+    source = Path(prompt_path).expanduser().resolve()
+    if not source.is_relative_to(expected_tmp_dir):
+        raise ValueError(f"Prompt path must be under project_root .tmp/changelog-eval: {source}")
+    if source.parent != expected_tmp_dir:
+        raise ValueError(f"Prompt path must be a direct child of project_root .tmp/changelog-eval: {source}")
+    if not source.name.endswith("-prompt.txt"):
+        raise ValueError(f"Prompt path is not a changelog temp artifact: {source}")
+
+    stem = source.name[: -len("-prompt.txt")]
+    if "-" not in stem or stem.startswith("-") or stem.endswith("-"):
+        raise ValueError(f"Prompt path is not a changelog temp artifact: {source}")
+    return source
+
+
+def _cleanup_changelog_prompt_artifact(*, project_root: Path, prompt_path: Path | None) -> None:
+    if prompt_path is None:
+        return
+    source = _validated_changelog_temp_artifact_path(project_root=project_root, prompt_path=prompt_path)
+    if source.exists():
+        source.unlink()
 
 
 def _write_changelog_failure(
@@ -3172,6 +3640,8 @@ def _generate_and_append_changelog_entry(
 ) -> tuple[bool, str | None, str]:
     project = project_root.name or str(project_root)
     actor_value = actor or _detect_actor(project_root=project_root)
+    changelog_dir = project_root / ".changelog"
+    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
     session_dir_abs = session_dir.resolve()
     run_id, preview_status = _preview_changelog_append_status(
         tool=tool,
@@ -3183,11 +3653,11 @@ def _generate_and_append_changelog_entry(
         source_match_json=source_match_json,
         actor=actor_value,
     )
-    if preview_status == "exists":
+    existing_entry = _find_existing_entry_by_run_id((entries_path,), run_id) if preview_status == "exists" else None
+    should_update_existing = preview_status == "exists" and _is_sync_owned_changelog_entry(existing_entry)
+    if preview_status == "exists" and not should_update_existing:
         return False, run_id, "exists"
 
-    changelog_dir = project_root / ".changelog"
-    entries_path, _ = _changelog_paths(changelog_dir=changelog_dir, actor=actor_value)
     source_identity = _canonical_session_identity_from_transcript(
         tool=tool,
         start=start,
@@ -3229,8 +3699,7 @@ def _generate_and_append_changelog_entry(
 
             activity_label = f"Changelog eval ({evaluator_value}) {session_dir.name}"
 
-            def _run_eval(d: dict) -> dict:
-                prompt = _build_codex_changelog_prompt(digest=d)
+            def _run_eval_prompt(prompt: str) -> dict:
                 if evaluator_value == "codex":
                     if schema_path is None:
                         raise click.ClickException("Internal error: missing Codex schema path")
@@ -3255,16 +3724,73 @@ def _generate_and_append_changelog_entry(
                 )
 
             try:
-                evaluator_out = _run_eval(digest)
+                if evaluator_value == "claude":
+                    full_prompt = _build_codex_changelog_prompt(digest=digest)
+                    full_prompt_path = _write_changelog_prompt_artifact(
+                        project_root=project_root,
+                        run_id=run_id,
+                        variant="full",
+                        prompt=full_prompt,
+                    )
+                    try:
+                        evaluator_out = _run_eval_prompt(full_prompt)
+                    except Exception as e:
+                        timed_out = isinstance(e, subprocess.TimeoutExpired) or "timed out after" in str(e).lower()
+                        context_too_large = _looks_like_context_window_error(str(e))
+                        # Some sessions are too large to fit in a single evaluator prompt.
+                        # Retry once with a budgeted digest before recording a failure.
+                        if timed_out or context_too_large:
+                            if timed_out:
+                                click.echo("Changelog eval timed out; retrying with budget digest...", err=True)
+                                budget_digest = _budget_changelog_digest(digest, max_chars=100_000)
+                            else:
+                                click.echo("Changelog eval too large; retrying with budget digest...", err=True)
+                                budget_digest = _budget_changelog_digest(digest)
+                            _archive_failed_changelog_prompt(project_root=project_root, prompt_path=full_prompt_path)
+                            budget_prompt = _build_codex_changelog_prompt(digest=budget_digest)
+                            budget_prompt_path = _write_changelog_prompt_artifact(
+                                project_root=project_root,
+                                run_id=run_id,
+                                variant="budget",
+                                prompt=budget_prompt,
+                            )
+                            try:
+                                evaluator_out = _run_eval_prompt(budget_prompt)
+                            except Exception:
+                                _archive_failed_changelog_prompt(
+                                    project_root=project_root, prompt_path=budget_prompt_path
+                                )
+                                raise
+                            else:
+                                _cleanup_changelog_prompt_artifact(
+                                    project_root=project_root,
+                                    prompt_path=budget_prompt_path,
+                                )
+                        else:
+                            _archive_failed_changelog_prompt(project_root=project_root, prompt_path=full_prompt_path)
+                            raise
+                    else:
+                        _cleanup_changelog_prompt_artifact(
+                            project_root=project_root,
+                            prompt_path=full_prompt_path,
+                        )
+                else:
+                    evaluator_out = _run_eval_prompt(_build_codex_changelog_prompt(digest=digest))
             except Exception as e:
+                if evaluator_value == "claude":
+                    raise
                 # Some sessions are too large to fit in a single evaluator prompt.
                 # Retry once with a budgeted digest before recording a failure.
                 if isinstance(e, subprocess.TimeoutExpired) or "timed out after" in str(e).lower():
                     click.echo("Changelog eval timed out; retrying with budget digest...", err=True)
-                    evaluator_out = _run_eval(_budget_changelog_digest(digest, max_chars=100_000))
+                    evaluator_out = _run_eval_prompt(
+                        _build_codex_changelog_prompt(digest=_budget_changelog_digest(digest, max_chars=100_000))
+                    )
                 elif _looks_like_context_window_error(str(e)):
                     click.echo("Changelog eval too large; retrying with budget digest...", err=True)
-                    evaluator_out = _run_eval(_budget_changelog_digest(digest))
+                    evaluator_out = _run_eval_prompt(
+                        _build_codex_changelog_prompt(digest=_budget_changelog_digest(digest))
+                    )
                 else:
                     raise
         finally:
@@ -3288,6 +3814,10 @@ def _generate_and_append_changelog_entry(
 
         created_at_dt = _parse_iso8601(start) or _parse_iso8601(end)
         created_at = created_at_dt.isoformat() if created_at_dt else _now_iso8601()
+        if should_update_existing and isinstance(existing_entry, dict):
+            existing_created_at = existing_entry.get("created_at")
+            if isinstance(existing_created_at, str) and existing_created_at.strip():
+                created_at = existing_created_at
 
         output_dir_value = (
             str(session_dir_abs)
@@ -3348,6 +3878,11 @@ def _generate_and_append_changelog_entry(
                     f"Warning: bullet[{i}] may be truncated: ...{bullet[-40:]!r}",
                     err=True,
                 )
+
+        if should_update_existing:
+            if _rewrite_entry_row_by_run_id(entries_path=entries_path, run_id=run_id, entry=entry):
+                return True, run_id, "updated"
+            return False, run_id, "exists"
 
         _append_jsonl(entries_path, entry)
         return True, run_id, "appended"
