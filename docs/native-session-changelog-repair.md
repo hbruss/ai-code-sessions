@@ -146,7 +146,7 @@ This prevents the current misleading behavior where a later observation computes
 
 Cleanup is a separate maintenance operation. It must not be bundled into normal sync.
 
-Adjacent behavior now implemented: forward `ais changelog sync --codex` discovery ignores explicit Codex subagent sessions (provenance in `session_meta.source.subagent.thread_spawn`). Historical rows that were synced before that exclusion are handled by a separate cleanup command, `ais changelog repair-subagent-sync`.
+Adjacent behavior now implemented: forward `ais changelog sync --codex` discovery ignores Codex non-top-level sessions when `session_meta.source.subagent` is present. Historical rows that were synced before the narrower explicit-thread-spawn exclusion are handled by a separate cleanup command, `ais changelog repair-subagent-sync`.
 
 ### Command shape
 

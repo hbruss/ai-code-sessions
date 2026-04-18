@@ -1617,6 +1617,17 @@ def _prompt_for_changelog_sync_root(*, candidate: dict, roots: list[str]) -> Pat
     return Path(selected).expanduser().resolve()
 
 
+def _candidate_cwd_within_scope_root(*, candidate: dict, scope_root: Path) -> bool | None:
+    cwd_value = candidate.get("cwd") if isinstance(candidate, dict) else None
+    if not isinstance(cwd_value, str) or not cwd_value.strip():
+        return None
+    try:
+        candidate_cwd = Path(cwd_value).expanduser().resolve()
+    except OSError:
+        return None
+    return candidate_cwd == scope_root or candidate_cwd.is_relative_to(scope_root)
+
+
 def _can_prompt_for_changelog_sync_root() -> bool:
     stdin = click.get_text_stream("stdin")
     stdout = click.get_text_stream("stdout")
@@ -1766,6 +1777,16 @@ def changelog_sync_cmd(
                 )
                 continue
             selected_root = _prompt_for_changelog_sync_root(candidate=candidate, roots=plausible_roots)
+
+        if scope_root is not None and confidence == "low" and selected_root is None:
+            candidate_within_scope = _candidate_cwd_within_scope_root(candidate=candidate, scope_root=scope_root)
+            if candidate_within_scope is False:
+                skipped += 1
+                click.echo(
+                    f"Sync: skipped {candidate.get('tool', 'unknown')} {source_name} "
+                    f"(explicit --project-root {scope_root} does not match candidate cwd)"
+                )
+                continue
 
         if selected_root is None:
             unresolved += 1

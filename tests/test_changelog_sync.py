@@ -924,6 +924,46 @@ def test_discover_native_codex_sessions_excludes_explicit_subagent_rollout(tmp_p
     assert sessions == []
 
 
+def test_discover_native_codex_sessions_excludes_non_top_level_source_variants(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    start = "2026-01-04T12:20:00Z"
+    end = "2026-01-04T12:30:00Z"
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    day_dir = codex_root / f"{start_dt.year:04d}" / f"{start_dt.month:02d}" / f"{start_dt.day:02d}"
+    _write_jsonl(
+        day_dir / "rollout-memory-consolidation.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "timestamp": start,
+                "payload": {
+                    "timestamp": start,
+                    "cwd": str(repo),
+                    "id": "codex-memory-builder",
+                    "source": {
+                        "subagent": "memory_consolidation",
+                    },
+                },
+            },
+            {"type": "event_msg", "timestamp": end},
+        ],
+    )
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 4, 11, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 13, 0, tzinfo=timezone.utc),
+    )
+
+    assert sessions == []
+
+
 def test_discover_native_sessions_codex_returns_only_top_level_candidates_when_subagent_exists(tmp_path, monkeypatch):
     codex_root = tmp_path / ".codex" / "sessions"
     home_root = tmp_path / "home"

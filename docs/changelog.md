@@ -92,7 +92,7 @@ Key behaviors:
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
 - If repo evidence is too weak, the session is reported as unresolved and skipped
-- `ais changelog sync --codex` ignores explicit Codex subagent sessions discovered from native rollout provenance (`session_meta.source.subagent.thread_spawn`)
+- `ais changelog sync --codex` ignores Codex non-top-level sessions discovered from native rollout provenance (`session_meta.source.subagent`), including explicit spawned subagents
 - Native-session sync uses stable logical session identity, so re-running sync for the same live session does not append duplicate rows
 - Sync-owned native-session rows are updated in place as the same session grows
 - If a richer export-owned row already represents that session, sync leaves it alone instead of replacing it

@@ -669,6 +669,21 @@ def _is_explicit_codex_subagent_from_session_meta_payload(payload: dict | None) 
     return isinstance(subagent.get("thread_spawn"), dict)
 
 
+def _is_non_top_level_codex_source_from_session_meta_payload(payload: dict | None) -> bool:
+    """Return True when session_meta marks the rollout as a non-top-level Codex source."""
+    if not isinstance(payload, dict):
+        return False
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return False
+    subagent = source.get("subagent")
+    if isinstance(subagent, str):
+        return bool(subagent.strip())
+    if isinstance(subagent, dict):
+        return bool(subagent)
+    return False
+
+
 def _looks_like_codex_rollout_jsonl(first_obj: dict) -> bool:
     if not isinstance(first_obj, dict):
         return False
@@ -4992,7 +5007,7 @@ def _discover_native_codex_sessions(*, since: datetime, until: datetime) -> list
                 continue
             seen_paths.add(resolved_path)
             session_meta_payload = _read_first_codex_session_meta_payload(resolved_path)
-            if _is_explicit_codex_subagent_from_session_meta_payload(session_meta_payload):
+            if _is_non_top_level_codex_source_from_session_meta_payload(session_meta_payload):
                 continue
             start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(resolved_path)
             if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):

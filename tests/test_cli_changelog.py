@@ -773,6 +773,68 @@ def test_changelog_sync_skips_low_confidence_sessions(monkeypatch, tmp_path):
     assert "unresolved=1" in result.output
 
 
+def test_changelog_sync_scoped_low_confidence_session_outside_repo_is_skipped(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    source_jsonl = tmp_path / "codex-low-outside.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:10:00+00:00",
+                "session_id": "codex-low-outside",
+                "cwd": str(outside_root),
+                "prompt_summary": "General local session",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": None,
+            "confidence": "low",
+            "reason": "No trustworthy repo evidence found",
+            "evidence": {
+                "plausible_project_roots": [],
+                "prompt_summary": "General local session",
+            },
+        },
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("append should not be called for skipped candidates")
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fail_if_called)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "sync",
+            "--codex",
+            "--project-root",
+            str(repo_root),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "explicit --project-root" in result.output
+    assert "processed=0" in result.output
+    assert "skipped=1" in result.output
+    assert "unresolved=0" in result.output
+
+
 def test_changelog_sync_project_root_suppresses_prompt_for_medium_confidence(monkeypatch, tmp_path):
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"
