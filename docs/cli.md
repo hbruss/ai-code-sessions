@@ -497,6 +497,8 @@ ais changelog sync --claude --dry-run
 | `--evaluator [codex|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
 | `--model TEXT` | Model override for the evaluator |
 
+Codex sync uses the rollout `cwd` first. If that is broad or outside a repo, Codex tool-call `workdir` values and local paths are treated as medium-confidence repo evidence; explicit `--project-root` can select a matching repo without an interactive prompt.
+
 **Examples:**
 
 ```bash

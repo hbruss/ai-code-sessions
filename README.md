@@ -201,7 +201,7 @@ ais changelog sync --claude --dry-run
 - Discovers native Codex and Claude sessions that overlap the scan window
 - Includes long-running Codex sessions that started earlier but ended or were updated during the window
 - Ignores explicit Codex subagent sessions (native `session_meta.source.subagent.thread_spawn` provenance)
-- Resolves the target git repo from session evidence
+- Resolves the target git repo from session evidence, including Codex tool-call `workdir` and local path usage
 - Prompts you when multiple repos are plausible
 - Reports ambiguous sessions as unresolved in non-interactive runs
 - Skips low-confidence sessions instead of guessing
@@ -506,6 +506,8 @@ ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --
 `ais changelog sync --codex` ignores explicit Codex subagent sessions discovered from native rollout provenance (`session_meta.source.subagent.thread_spawn`).
 
 Codex sessions are stored under their start-day folder, but sync matches by session overlap with the scan window. Long-running Codex sessions can still be discovered when their rollout file was updated during the window.
+
+When a Codex rollout starts from a broad directory such as `$HOME`, `ais` treats actual Codex tool-call paths and `workdir` values as medium-confidence repo evidence. With `--project-root`, a matching repo is selected without prompting; without `--project-root`, medium-confidence matches still require operator selection.
 
 ### `ais changelog backfill`
 

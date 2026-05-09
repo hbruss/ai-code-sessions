@@ -90,6 +90,7 @@ Key behaviors:
 - The default scan window is the last 48 hours
 - Codex sync discovers sessions by overlap with the scan window, including long-running sessions that started earlier but ended or were updated during the window
 - `ais` writes only when repo targeting is high confidence
+- Codex tool-call `workdir` and local path usage can provide medium-confidence repo evidence when the rollout `cwd` is broad
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
 - If repo evidence is too weak, the session is reported as unresolved and skipped
