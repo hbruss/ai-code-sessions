@@ -4988,6 +4988,38 @@ def _candidate_codex_day_dirs_for_window(sessions_base: Path, since: datetime, u
     ]
 
 
+def _candidate_codex_rollout_paths_for_window(sessions_base: Path, since: datetime, until: datetime) -> list[Path]:
+    paths: list[Path] = []
+    seen_paths: set[Path] = set()
+
+    def add_path(path: Path) -> None:
+        try:
+            resolved_path = path.resolve()
+        except OSError:
+            return
+        if resolved_path in seen_paths:
+            return
+        seen_paths.add(resolved_path)
+        paths.append(resolved_path)
+
+    for day_dir in _candidate_codex_day_dirs_for_window(sessions_base, since, until):
+        if not day_dir.exists():
+            continue
+        for path in sorted(day_dir.glob("rollout-*.jsonl")):
+            add_path(path)
+
+    since_ts = since.timestamp()
+    for path in sorted(sessions_base.glob("*/*/*/rollout-*.jsonl")):
+        try:
+            if path.stat().st_mtime < since_ts:
+                continue
+        except OSError:
+            continue
+        add_path(path)
+
+    return paths
+
+
 def _discover_native_codex_sessions(*, since: datetime, until: datetime) -> list[dict]:
     since, until = _normalized_native_session_window(since=since, until=until)
     base = _user_codex_sessions_dir()
@@ -4995,33 +5027,24 @@ def _discover_native_codex_sessions(*, since: datetime, until: datetime) -> list
         return []
 
     candidates: list[dict] = []
-    seen_paths: set[Path] = set()
-    day_dirs = _candidate_codex_day_dirs_for_window(base, since, until)
 
-    for day_dir in day_dirs:
-        if not day_dir.exists():
+    for resolved_path in _candidate_codex_rollout_paths_for_window(base, since, until):
+        session_meta_payload = _read_first_codex_session_meta_payload(resolved_path)
+        if _is_non_top_level_codex_source_from_session_meta_payload(session_meta_payload):
             continue
-        for path in sorted(day_dir.glob("rollout-*.jsonl")):
-            resolved_path = path.resolve()
-            if resolved_path in seen_paths:
-                continue
-            seen_paths.add(resolved_path)
-            session_meta_payload = _read_first_codex_session_meta_payload(resolved_path)
-            if _is_non_top_level_codex_source_from_session_meta_payload(session_meta_payload):
-                continue
-            start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(resolved_path)
-            if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
-                continue
-            candidate = _build_native_session_candidate(
-                tool="codex",
-                source_jsonl=resolved_path,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                cwd=cwd,
-                session_id=session_id,
-            )
-            if candidate is not None:
-                candidates.append(candidate)
+        start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(resolved_path)
+        if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
+            continue
+        candidate = _build_native_session_candidate(
+            tool="codex",
+            source_jsonl=resolved_path,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            cwd=cwd,
+            session_id=session_id,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
 
     candidates.sort(
         key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),

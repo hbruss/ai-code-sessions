@@ -469,7 +469,7 @@ ais changelog backfill --limit 5 --max-concurrency 1
 
 Sync recent native Codex and Claude sessions into per-repo changelog entries.
 
-This is the primary changelog workflow. By default it scans the last 48 hours, writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
+This is the primary changelog workflow. By default it scans the last 48 hours, including long-running native sessions that started earlier but overlap the scan window. It writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
 
 Evaluator selection follows the same precedence as the managed `ctx` workflow: explicit `--evaluator`, then `CTX_CHANGELOG_EVALUATOR` / `AI_CODE_SESSIONS_CHANGELOG_EVALUATOR`, then config `changelog.evaluator`, then `codex`.
 

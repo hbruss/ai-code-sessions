@@ -33,3 +33,7 @@
 ## 2026-04-17
 
 - When changing `ais changelog sync` eligibility rules, do not describe the outcome loosely as "removing things from being synced" without immediately separating three cases: future discovery exclusion, scoped skip/out-of-scope filtering, and historical cleanup. Russ will reasonably read that phrasing as data removal unless the distinction is explicit.
+
+## 2026-04-30
+
+- Do not treat Claude TUI startup or `claude auth status` as proof that Claude can make model requests. For evaluator failures, verify a minimal `claude --print` request and check the OAuth expiry metadata separately; an expired token can still leave the TUI launch looking healthy.

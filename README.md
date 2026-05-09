@@ -156,7 +156,7 @@ claude
 ### 5. Sync the Changelog
 
 ```bash
-# Sync recent Codex sessions from the last 48 hours
+# Sync Codex sessions that overlap the last 48 hours
 ais changelog sync --codex
 
 # Preview Claude sessions without writing
@@ -176,14 +176,14 @@ ais ctx "Fix the login race condition" --codex
 
 ## The Normal Workflow
 
-`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan recent native session logs, resolve the correct repo, and append changelog entries only for sessions that have not already been recorded.
+`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, and append changelog entries only for sessions that have not already been recorded.
 
 By default, changelog evaluation follows the normal evaluator precedence: explicit `--evaluator`, then `CTX_CHANGELOG_EVALUATOR` / `AI_CODE_SESSIONS_CHANGELOG_EVALUATOR`, then config `changelog.evaluator`, then `codex`.
 
 ### Basic Usage
 
 ```bash
-# Default: scan the last 48 hours
+# Default: scan sessions that overlap the last 48 hours
 ais changelog sync --codex
 
 # Sync recent sessions for the current repo only
@@ -198,7 +198,8 @@ ais changelog sync --claude --dry-run
 
 ### What It Does
 
-- Discovers recent native Codex and Claude sessions
+- Discovers native Codex and Claude sessions that overlap the scan window
+- Includes long-running Codex sessions that started earlier but ended or were updated during the window
 - Ignores explicit Codex subagent sessions (native `session_meta.source.subagent.thread_spawn` provenance)
 - Resolves the target git repo from session evidence
 - Prompts you when multiple repos are plausible
@@ -266,12 +267,12 @@ After each session, you'll find:
 
 ## The Changelog System
 
-`ai-code-sessions` can generate structured changelog entries directly from recent native sessions or from exported transcript directories. These aren't commit messages; they're higher-level summaries of what an AI-assisted coding session actually accomplished.
+`ai-code-sessions` can generate structured changelog entries directly from native sessions that overlap a scan window or from exported transcript directories. These aren't commit messages; they're higher-level summaries of what an AI-assisted coding session actually accomplished.
 
 ### Normal Usage
 
 ```bash
-# Default: recent sessions from the last 48 hours
+# Default: sessions that overlap the last 48 hours
 ais changelog sync --codex
 
 # Sync both tools over a custom window
@@ -281,7 +282,7 @@ ais changelog sync --all --since "7 days ago"
 ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
 ```
 
-`ais changelog sync` is idempotent. You can run it after every session; it skips sessions that are already represented in the target repo's changelog.
+`ais changelog sync` is idempotent. You can run it after every session; it appends missing sessions, updates sync-owned rows as the same live session grows, and leaves richer existing entries alone.
 
 Historical cleanup commands are separate from forward sync:
 
@@ -494,7 +495,7 @@ ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --
 | Option | Description |
 |--------|-------------|
 | `--codex`, `--claude`, `--all` | Select which native session stores to scan |
-| `--since`, `--until` | Define the scan window (`--since` defaults to 48 hours before `--until`/now) |
+| `--since`, `--until` | Define the scan window (`--since` defaults to 48 hours before `--until`/now; sessions match by overlap) |
 | `--limit` | Limit the number of discovered sessions considered |
 | `--project-root` | Restrict writes to one repo; matching medium-confidence sessions do not prompt |
 | `--dry-run` | Show planned appends without writing |
@@ -503,6 +504,8 @@ ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --
 | `--model` | Model override for the evaluator |
 
 `ais changelog sync --codex` ignores explicit Codex subagent sessions discovered from native rollout provenance (`session_meta.source.subagent.thread_spawn`).
+
+Codex sessions are stored under their start-day folder, but sync matches by session overlap with the scan window. Long-running Codex sessions can still be discovered when their rollout file was updated during the window.
 
 ### `ais changelog backfill`
 
