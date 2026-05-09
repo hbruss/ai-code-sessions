@@ -4928,7 +4928,7 @@ def _native_session_prompt_summary(source_jsonl: Path) -> str:
     return summary if summary and summary != "(no summary)" else ""
 
 
-_CODEX_TOOL_PATH_HINT_RE = re.compile(r"(?<![\w:/])(?:~|/[^\s\"'`|;&<>$)]+)")
+_CODEX_TOOL_PATH_HINT_RE = re.compile(r"(?<![\w:/])(?:~(?:/[^\s\"'`|;&<>$)]+)?|/[^\s\"'`|;&<>$)]+)")
 _CODEX_TOOL_PATH_HINT_LIMIT = 24
 
 
