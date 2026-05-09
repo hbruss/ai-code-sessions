@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -687,6 +688,34 @@ def test_discover_native_sessions_filters_to_overlapping_window_and_sorts_newest
     assert sessions[0]["end"] == "2026-01-01T03:00:00+00:00"
     assert sessions[1]["end"] == "2026-01-01T02:15:00+00:00"
     assert sessions[2]["end"] == "2026-01-01T01:15:00+00:00"
+
+
+def test_discover_native_codex_sessions_includes_older_start_day_when_file_updated_in_window(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+
+    long_running = _write_codex_session(
+        codex_root,
+        filename="rollout-long-running.jsonl",
+        start="2026-01-01T00:00:00Z",
+        end="2026-01-08T12:00:00Z",
+        cwd=repo,
+        session_id="codex-long-running",
+    )
+    end_ts = datetime(2026, 1, 8, 12, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(long_running, (end_ts, end_ts))
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 8, 11, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 8, 13, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(session["tool"], Path(session["source_jsonl"]).name) for session in sessions] == [
+        ("codex", long_running.name)
+    ]
 
 
 def test_discover_native_codex_and_claude_sessions_support_tool_specific_paths(tmp_path, monkeypatch):

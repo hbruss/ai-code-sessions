@@ -75,7 +75,7 @@ Each changelog entry includes:
 This is the normal post-session workflow:
 
 ```bash
-# Sync recent Codex sessions from the last 48 hours
+# Sync Codex sessions that overlap the last 48 hours
 ais changelog sync --codex
 
 # Scan both tools over a custom window
@@ -88,6 +88,7 @@ ais changelog sync --claude --dry-run
 Key behaviors:
 
 - The default scan window is the last 48 hours
+- Codex sync discovers sessions by overlap with the scan window, including long-running sessions that started earlier but ended or were updated during the window
 - `ais` writes only when repo targeting is high confidence
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
