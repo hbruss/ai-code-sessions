@@ -1782,9 +1782,11 @@ def changelog_sync_cmd(
             candidate_within_scope = _candidate_cwd_within_scope_root(candidate=candidate, scope_root=scope_root)
             if candidate_within_scope is False:
                 skipped += 1
+                candidate_cwd = candidate.get("cwd")
+                candidate_cwd_suffix = f" {candidate_cwd}" if isinstance(candidate_cwd, str) and candidate_cwd else ""
                 click.echo(
                     f"Sync: skipped {candidate.get('tool', 'unknown')} {source_name} "
-                    f"(explicit --project-root {scope_root} does not match candidate cwd)"
+                    f"(explicit --project-root {scope_root} does not match candidate cwd{candidate_cwd_suffix})"
                 )
                 continue
 

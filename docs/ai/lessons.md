@@ -37,3 +37,7 @@
 ## 2026-04-30
 
 - Do not treat Claude TUI startup or `claude auth status` as proof that Claude can make model requests. For evaluator failures, verify a minimal `claude --print` request and check the OAuth expiry metadata separately; an expired token can still leave the TUI launch looking healthy.
+
+## 2026-05-08
+
+- When a scoped Codex changelog sync skips a rollout as out-of-scope, do not stop at `session_meta.cwd`. Codex sessions can start from a broad directory while the actual tool calls target one repo; inspect `turn_context.cwd`, tool-call `workdir`, and local path arguments before concluding `--project-root` does not match.

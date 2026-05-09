@@ -1049,6 +1049,77 @@ def test_discover_native_sessions_codex_returns_only_top_level_candidates_when_s
     ]
 
 
+def test_discover_native_codex_session_uses_tool_call_paths_as_medium_confidence_repo_hints(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    home_root.mkdir()
+    repo_root = tmp_path / "Frank-Eileen"
+    config_path = repo_root / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("[mcp_servers.asana]\n", encoding="utf-8")
+
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    repo_root_resolved = repo_root.resolve()
+
+    def fake_git_toplevel(path: Path) -> Path | None:
+        resolved = Path(path).resolve()
+        if resolved == repo_root_resolved or repo_root_resolved in resolved.parents:
+            return repo_root_resolved
+        return None
+
+    monkeypatch.setattr(core._core, "_git_toplevel", fake_git_toplevel)
+
+    start = "2026-01-04T15:00:00Z"
+    end = "2026-01-04T15:10:00Z"
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    day_dir = codex_root / f"{start_dt.year:04d}" / f"{start_dt.month:02d}" / f"{start_dt.day:02d}"
+    _write_jsonl(
+        day_dir / "rollout-home-cwd-with-repo-tool-path.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "timestamp": start,
+                "payload": {
+                    "timestamp": start,
+                    "cwd": str(home_root),
+                    "id": "codex-home-cwd-with-repo-tool-path",
+                },
+            },
+            {
+                "type": "response_item",
+                "timestamp": start,
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": json.dumps(
+                        {
+                            "cmd": f"bat --color=never --style=numbers {config_path}",
+                        }
+                    ),
+                },
+            },
+            {"type": "event_msg", "timestamp": end},
+        ],
+    )
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 4, 14, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(sessions) == 1
+    assert sessions[0]["cwd"] == str(home_root.resolve())
+
+    resolution = core._resolve_native_session_project(sessions[0])
+
+    assert resolution["confidence"] == "medium"
+    assert resolution["project_root"] is None
+    assert resolution["reason"] == "Repo evidence is plausible but not strong enough for automatic writes"
+    assert resolution["evidence"]["plausible_project_roots"] == [str(repo_root_resolved)]
+
+
 def test_resolve_native_session_project_returns_high_confidence_with_consistent_git_evidence(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -1091,6 +1162,48 @@ def test_resolve_native_session_project_returns_high_confidence_with_consistent_
         "plausible_project_roots": [str(repo_root.resolve())],
         "conflicts": [],
     }
+
+
+def test_resolve_native_session_project_keeps_git_cwd_confidence_over_tool_path_hints(tmp_path, monkeypatch):
+    cwd_repo = tmp_path / "ai-code-sessions"
+    other_repo = tmp_path / "Frank-Eileen"
+    cwd = cwd_repo / "subdir"
+    cwd.mkdir(parents=True)
+    other_config = other_repo / ".codex" / "config.toml"
+    other_config.parent.mkdir(parents=True)
+    other_config.write_text("[mcp_servers.asana]\n", encoding="utf-8")
+    source_jsonl = tmp_path / "rollout.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+
+    cwd_repo_resolved = cwd_repo.resolve()
+    other_repo_resolved = other_repo.resolve()
+
+    def fake_git_toplevel(path: Path) -> Path | None:
+        resolved = Path(path).resolve()
+        if resolved == cwd_repo_resolved or cwd_repo_resolved in resolved.parents:
+            return cwd_repo_resolved
+        if resolved == other_repo_resolved or other_repo_resolved in resolved.parents:
+            return other_repo_resolved
+        return None
+
+    monkeypatch.setattr(core._core, "_git_toplevel", fake_git_toplevel)
+
+    resolution = core._resolve_native_session_project(
+        {
+            "tool": "codex",
+            "cwd": str(cwd),
+            "source_jsonl": source_jsonl,
+            "start": "2026-01-01T00:00:00+00:00",
+            "end": "2026-01-01T00:05:00+00:00",
+            "session_id": "codex-123",
+            "prompt_summary": "Release ai-code-sessions",
+            "project_hints": [{"kind": "codex_tool_path", "value": str(other_config)}],
+        }
+    )
+
+    assert resolution["confidence"] == "high"
+    assert resolution["project_root"] == str(cwd_repo_resolved)
+    assert resolution["evidence"]["plausible_project_roots"] == [str(cwd_repo_resolved)]
 
 
 def test_resolve_native_session_project_returns_low_confidence_without_repo_evidence(tmp_path):

@@ -4928,6 +4928,93 @@ def _native_session_prompt_summary(source_jsonl: Path) -> str:
     return summary if summary and summary != "(no summary)" else ""
 
 
+_CODEX_TOOL_PATH_HINT_RE = re.compile(r"(?<![\w:/])(?:~|/[^\s\"'`|;&<>$)]+)")
+_CODEX_TOOL_PATH_HINT_LIMIT = 24
+
+
+def _append_project_hint(hints: list[dict], *, seen: set[tuple[str, str]], kind: str, value: str | None) -> None:
+    if not isinstance(value, str) or not value.strip():
+        return
+    normalized_value = value.strip().rstrip(".,;)]}")
+    if not normalized_value:
+        return
+    key = (kind, normalized_value)
+    if key in seen:
+        return
+    seen.add(key)
+    hints.append({"kind": kind, "value": normalized_value})
+
+
+def _extract_local_path_hints_from_text(text: str) -> list[str]:
+    if not isinstance(text, str) or not text:
+        return []
+    return [match.group(0).rstrip(".,;)]}") for match in _CODEX_TOOL_PATH_HINT_RE.finditer(text)]
+
+
+def _codex_tool_call_project_hints(arguments: object) -> list[dict]:
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = {}
+    if not isinstance(arguments, dict):
+        return []
+
+    hints: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    for key in ("cwd", "workdir"):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            _append_project_hint(hints, seen=seen, kind=f"codex_tool_{key}", value=value)
+
+    command = arguments.get("cmd")
+    if isinstance(command, str):
+        for path_hint in _extract_local_path_hints_from_text(command):
+            _append_project_hint(hints, seen=seen, kind="codex_tool_path", value=path_hint)
+            if len(hints) >= _CODEX_TOOL_PATH_HINT_LIMIT:
+                return hints
+
+    for key in ("path", "file", "filename"):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            _append_project_hint(hints, seen=seen, kind=f"codex_tool_{key}", value=value)
+
+    return hints[:_CODEX_TOOL_PATH_HINT_LIMIT]
+
+
+def _codex_rollout_project_hints(source_jsonl: Path) -> list[dict]:
+    hints: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        with open(source_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+
+                payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+                if obj.get("type") == "turn_context":
+                    cwd_value = payload.get("cwd")
+                    if isinstance(cwd_value, str):
+                        _append_project_hint(hints, seen=seen, kind="codex_turn_context_cwd", value=cwd_value)
+                elif obj.get("type") == "response_item" and payload.get("type") == "function_call":
+                    for hint in _codex_tool_call_project_hints(payload.get("arguments")):
+                        kind = hint.get("kind")
+                        value = hint.get("value")
+                        if isinstance(kind, str) and isinstance(value, str):
+                            _append_project_hint(hints, seen=seen, kind=kind, value=value)
+
+                if len(hints) >= _CODEX_TOOL_PATH_HINT_LIMIT:
+                    return hints[:_CODEX_TOOL_PATH_HINT_LIMIT]
+    except OSError:
+        return []
+    return hints
+
+
 def _build_native_session_candidate(
     *,
     tool: str,
@@ -5121,6 +5208,65 @@ def _normalize_project_hints(candidate: dict) -> list[dict]:
     return normalized
 
 
+def _merge_project_hints(*hint_groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for hints in hint_groups:
+        for hint in hints:
+            if not isinstance(hint, dict):
+                continue
+            kind = hint.get("kind")
+            value = hint.get("value")
+            if not isinstance(kind, str) or not isinstance(value, str):
+                continue
+            _append_project_hint(merged, seen=seen, kind=kind, value=value)
+    return merged
+
+
+def _git_toplevel_from_path_hint(value: str) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        candidate_path = Path(value).expanduser().resolve(strict=False)
+    except OSError:
+        return None
+    if not candidate_path.is_absolute():
+        return None
+
+    if candidate_path.exists() and candidate_path.is_dir():
+        probe = candidate_path
+    else:
+        probe = candidate_path.parent
+
+    while not (probe.exists() and probe.is_dir()):
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
+
+    top = _git_toplevel(probe)
+    if top is not None:
+        return str(Path(top).expanduser().resolve())
+    return None
+
+
+def _project_hint_to_git_toplevel(hint: dict) -> str | None:
+    kind = hint.get("kind") if isinstance(hint, dict) else None
+    value = hint.get("value") if isinstance(hint, dict) else None
+    if not isinstance(kind, str) or not isinstance(value, str):
+        return None
+    if kind not in {
+        "codex_tool_cwd",
+        "codex_tool_workdir",
+        "codex_tool_path",
+        "codex_tool_file",
+        "codex_tool_filename",
+        "codex_turn_context_cwd",
+    }:
+        return None
+    return _git_toplevel_from_path_hint(value)
+
+
 def _resolve_native_session_project(candidate: dict) -> dict:
     tool = (candidate.get("tool") or "").strip().lower() if isinstance(candidate, dict) else ""
     source_jsonl = candidate.get("source_jsonl") if isinstance(candidate, dict) else None
@@ -5144,6 +5290,8 @@ def _resolve_native_session_project(candidate: dict) -> dict:
             git_toplevel = str(Path(top).expanduser().resolve())
 
     project_hints = _normalize_project_hints(candidate)
+    if git_toplevel is None and tool == "codex" and source_value is not None:
+        project_hints = _merge_project_hints(project_hints, _codex_rollout_project_hints(Path(source_value)))
     plausible_project_roots: list[str] = []
     if git_toplevel is not None:
         plausible_project_roots.append(git_toplevel)
@@ -5158,6 +5306,12 @@ def _resolve_native_session_project(candidate: dict) -> dict:
         hinted_value = str(Path(hinted_top).expanduser().resolve())
         if hinted_value not in plausible_project_roots:
             plausible_project_roots.append(hinted_value)
+
+    if git_toplevel is None:
+        for hint in project_hints:
+            hinted_value = _project_hint_to_git_toplevel(hint)
+            if hinted_value is not None and hinted_value not in plausible_project_roots:
+                plausible_project_roots.append(hinted_value)
 
     conflicts: list[str] = []
     if len(plausible_project_roots) > 1:
