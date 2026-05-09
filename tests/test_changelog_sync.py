@@ -1120,6 +1120,80 @@ def test_discover_native_codex_session_uses_tool_call_paths_as_medium_confidence
     assert resolution["evidence"]["plausible_project_roots"] == [str(repo_root_resolved)]
 
 
+def test_discover_native_codex_session_preserves_tilde_tool_path_hints(tmp_path, monkeypatch):
+    codex_root = tmp_path / ".codex" / "sessions"
+    home_root = tmp_path / "home"
+    home_root.mkdir()
+    repo_root = home_root / "Frank-Eileen"
+    config_path = repo_root / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("[mcp_servers.asana]\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", str(home_root))
+    monkeypatch.setattr(core._core, "_user_codex_sessions_dir", lambda: codex_root)
+    monkeypatch.setattr(core._core.Path, "home", classmethod(lambda cls: home_root))
+
+    repo_root_resolved = repo_root.resolve()
+
+    def fake_git_toplevel(path: Path) -> Path | None:
+        resolved = Path(path).resolve()
+        if resolved == repo_root_resolved or repo_root_resolved in resolved.parents:
+            return repo_root_resolved
+        return None
+
+    monkeypatch.setattr(core._core, "_git_toplevel", fake_git_toplevel)
+
+    start = "2026-01-04T15:20:00Z"
+    end = "2026-01-04T15:30:00Z"
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    day_dir = codex_root / f"{start_dt.year:04d}" / f"{start_dt.month:02d}" / f"{start_dt.day:02d}"
+    session_path = _write_jsonl(
+        day_dir / "rollout-home-cwd-with-tilde-repo-tool-path.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "timestamp": start,
+                "payload": {
+                    "timestamp": start,
+                    "cwd": str(home_root),
+                    "id": "codex-home-cwd-with-tilde-repo-tool-path",
+                },
+            },
+            {
+                "type": "response_item",
+                "timestamp": start,
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": json.dumps(
+                        {
+                            "cmd": "cat ~/Frank-Eileen/.codex/config.toml",
+                        }
+                    ),
+                },
+            },
+            {"type": "event_msg", "timestamp": end},
+        ],
+    )
+
+    assert core._codex_rollout_project_hints(session_path) == [
+        {"kind": "codex_tool_path", "value": "~/Frank-Eileen/.codex/config.toml"}
+    ]
+
+    sessions = core._discover_native_codex_sessions(
+        since=datetime(2026, 1, 4, 15, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 4, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(sessions) == 1
+
+    resolution = core._resolve_native_session_project(sessions[0])
+
+    assert resolution["confidence"] == "medium"
+    assert resolution["project_root"] is None
+    assert resolution["evidence"]["plausible_project_roots"] == [str(repo_root_resolved)]
+
+
 def test_resolve_native_session_project_returns_high_confidence_with_consistent_git_evidence(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()

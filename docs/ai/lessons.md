@@ -41,3 +41,4 @@
 ## 2026-05-08
 
 - When a scoped Codex changelog sync skips a rollout as out-of-scope, do not stop at `session_meta.cwd`. Codex sessions can start from a broad directory while the actual tool calls target one repo; inspect `turn_context.cwd`, tool-call `workdir`, and local path arguments before concluding `--project-root` does not match.
+- Do not merge an AI-reviewed PR while either Codex or CodeRabbit is still pending. Wait for both bots to finish, read and resolve their feedback, then merge only after both review surfaces are clean.
