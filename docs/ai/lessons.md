@@ -42,3 +42,4 @@
 
 - When a scoped Codex changelog sync skips a rollout as out-of-scope, do not stop at `session_meta.cwd`. Codex sessions can start from a broad directory while the actual tool calls target one repo; inspect `turn_context.cwd`, tool-call `workdir`, and local path arguments before concluding `--project-root` does not match.
 - Do not merge an AI-reviewed PR while either Codex or CodeRabbit is still pending. Wait for both bots to finish, read and resolve their feedback, then merge only after both review surfaces are clean.
+- When debugging slow `ais changelog sync` runs, do not assume `--codex` means the evaluator is Codex. Check evaluator and model precedence separately, and preserve Russ's intended local Claude model (`opus[1m]` on this machine) while still respecting explicit `--model` overrides.

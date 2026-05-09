@@ -427,6 +427,7 @@ def test_changelog_sync_uses_env_evaluator_default_when_flag_omitted(monkeypatch
     source_jsonl.write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("CTX_CHANGELOG_EVALUATOR", "claude")
+    monkeypatch.setenv("CTX_CHANGELOG_MODEL", "env-model")
     monkeypatch.setattr(
         cli_module,
         "_discover_native_sessions",
@@ -464,6 +465,8 @@ def test_changelog_sync_uses_env_evaluator_default_when_flag_omitted(monkeypatch
 
     assert result.exit_code == 0
     assert captured["evaluator"] == "claude"
+    assert captured["evaluator_model"] == "env-model"
+    assert "evaluator=claude, model=env-model" in result.output
     assert "processed=1" in result.output
 
 
@@ -473,7 +476,7 @@ def test_changelog_sync_uses_config_evaluator_default_when_flag_omitted(monkeypa
     source_jsonl = tmp_path / "rollout-config-default.jsonl"
     source_jsonl.write_text("{}", encoding="utf-8")
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
+    config_path.write_text('[changelog]\nevaluator = "claude"\nmodel = "opus[1m]"\n', encoding="utf-8")
 
     monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
     monkeypatch.delenv("CTX_CHANGELOG_EVALUATOR", raising=False)
@@ -515,6 +518,8 @@ def test_changelog_sync_uses_config_evaluator_default_when_flag_omitted(monkeypa
 
     assert result.exit_code == 0
     assert captured["evaluator"] == "claude"
+    assert captured["evaluator_model"] == "opus[1m]"
+    assert "evaluator=claude, model=opus[1m]" in result.output
     assert "processed=1" in result.output
 
 
@@ -523,8 +528,14 @@ def test_changelog_sync_uses_each_resolved_repo_config_when_project_root_is_omit
     repo_b = tmp_path / "repo-b"
     repo_a.mkdir()
     repo_b.mkdir()
-    (repo_a / ".ai-code-sessions.toml").write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
-    (repo_b / ".ai-code-sessions.toml").write_text('[changelog]\nevaluator = "codex"\n', encoding="utf-8")
+    (repo_a / ".ai-code-sessions.toml").write_text(
+        '[changelog]\nevaluator = "claude"\nmodel = "opus[1m]"\n',
+        encoding="utf-8",
+    )
+    (repo_b / ".ai-code-sessions.toml").write_text(
+        '[changelog]\nevaluator = "codex"\nmodel = "gpt-5.2"\n',
+        encoding="utf-8",
+    )
     source_a = tmp_path / "rollout-repo-a.jsonl"
     source_b = tmp_path / "rollout-repo-b.jsonl"
     source_a.write_text("{}", encoding="utf-8")
@@ -570,7 +581,13 @@ def test_changelog_sync_uses_each_resolved_repo_config_when_project_root_is_omit
     captured = []
 
     def fake_generate_and_append(**kwargs):
-        captured.append({"project_root": str(kwargs["project_root"]), "evaluator": kwargs["evaluator"]})
+        captured.append(
+            {
+                "project_root": str(kwargs["project_root"]),
+                "evaluator": kwargs["evaluator"],
+                "evaluator_model": kwargs["evaluator_model"],
+            }
+        )
         return True, f"run-{len(captured)}", "appended"
 
     monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
@@ -580,22 +597,23 @@ def test_changelog_sync_uses_each_resolved_repo_config_when_project_root_is_omit
 
     assert result.exit_code == 0
     assert captured == [
-        {"project_root": str(repo_a), "evaluator": "claude"},
-        {"project_root": str(repo_b), "evaluator": "codex"},
+        {"project_root": str(repo_a), "evaluator": "claude", "evaluator_model": "opus[1m]"},
+        {"project_root": str(repo_b), "evaluator": "codex", "evaluator_model": "gpt-5.2"},
     ]
     assert "processed=2" in result.output
 
 
-def test_changelog_sync_explicit_evaluator_overrides_env_and_config(monkeypatch, tmp_path):
+def test_changelog_sync_explicit_evaluator_and_model_override_env_and_config(monkeypatch, tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     source_jsonl = tmp_path / "rollout-explicit-evaluator.jsonl"
     source_jsonl.write_text("{}", encoding="utf-8")
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[changelog]\nevaluator = "claude"\n', encoding="utf-8")
+    config_path.write_text('[changelog]\nevaluator = "claude"\nmodel = "config-model"\n', encoding="utf-8")
 
     monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
     monkeypatch.setenv("CTX_CHANGELOG_EVALUATOR", "claude")
+    monkeypatch.setenv("CTX_CHANGELOG_MODEL", "env-model")
     monkeypatch.setattr(
         cli_module,
         "_discover_native_sessions",
@@ -631,11 +649,23 @@ def test_changelog_sync_explicit_evaluator_overrides_env_and_config(monkeypatch,
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["changelog", "sync", "--codex", "--project-root", str(repo_root), "--evaluator", "codex"],
+        [
+            "changelog",
+            "sync",
+            "--codex",
+            "--project-root",
+            str(repo_root),
+            "--evaluator",
+            "codex",
+            "--model",
+            "flag-model",
+        ],
     )
 
     assert result.exit_code == 0
     assert captured["evaluator"] == "codex"
+    assert captured["evaluator_model"] == "flag-model"
+    assert "evaluator=codex, model=flag-model" in result.output
     assert "processed=1" in result.output
 
 

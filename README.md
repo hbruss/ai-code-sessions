@@ -178,7 +178,7 @@ ais ctx "Fix the login race condition" --codex
 
 `ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, append entries for new sessions, and update sync-owned rows when the same live session grows.
 
-By default, changelog evaluation follows the normal evaluator precedence: explicit `--evaluator`, then `CTX_CHANGELOG_EVALUATOR` / `AI_CODE_SESSIONS_CHANGELOG_EVALUATOR`, then config `changelog.evaluator`, then `codex`.
+By default, changelog evaluation follows the normal precedence: explicit `--evaluator` / `--model`, then `CTX_CHANGELOG_EVALUATOR` / `CTX_CHANGELOG_MODEL` (or the `AI_CODE_SESSIONS_*` equivalents), then config `changelog.evaluator` / `changelog.model`, then tool defaults.
 
 ### Basic Usage
 
@@ -206,7 +206,7 @@ ais changelog sync --claude --dry-run
 - Reports ambiguous sessions as unresolved in non-interactive runs
 - Skips low-confidence sessions instead of guessing
 - Appends changelog entries only for sessions that are not already recorded
-- Uses the configured changelog evaluator unless you override it with `--evaluator`
+- Uses the configured changelog evaluator and model unless you override them with `--evaluator` / `--model`
 
 Use [`docs/changelog.md`](docs/changelog.md) for the full changelog workflow and [`docs/cli.md`](docs/cli.md) for the complete flag reference.
 

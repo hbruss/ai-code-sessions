@@ -1689,9 +1689,21 @@ def changelog_sync_cmd(
     env_evaluator = (
         (_env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or "").strip()
     ).lower()
+    explicit_model = (model or "").strip()
+    env_model = (_env_first("CTX_CHANGELOG_MODEL", "AI_CODE_SESSIONS_CHANGELOG_MODEL") or "").strip()
+    config_cache: dict[Path, dict] = {}
     evaluator_cache: dict[Path, str] = {}
+    model_cache: dict[Path, str | None] = {}
     claude_tokens_loaded = False
     claude_tokens_value: int | None = None
+
+    def _load_sync_config(target_root: Path) -> dict:
+        cached = config_cache.get(target_root)
+        if cached is not None:
+            return cached
+        loaded = _load_config(project_root=target_root)
+        config_cache[target_root] = loaded
+        return loaded
 
     def _resolve_sync_evaluator(target_root: Path) -> str:
         if explicit_evaluator:
@@ -1701,12 +1713,25 @@ def changelog_sync_cmd(
         cached = evaluator_cache.get(target_root)
         if cached is not None:
             return cached
-        cfg = _load_config(project_root=target_root)
+        cfg = _load_sync_config(target_root)
         cfg_evaluator = _config_get(cfg, "changelog.evaluator")
         resolved = (
             cfg_evaluator.strip().lower() if isinstance(cfg_evaluator, str) and cfg_evaluator.strip() else "codex"
         )
         evaluator_cache[target_root] = resolved
+        return resolved
+
+    def _resolve_sync_model(target_root: Path) -> str | None:
+        if explicit_model:
+            return explicit_model
+        if env_model:
+            return env_model
+        if target_root in model_cache:
+            return model_cache[target_root]
+        cfg = _load_sync_config(target_root)
+        cfg_model = _config_get(cfg, "changelog.model")
+        resolved = cfg_model.strip() if isinstance(cfg_model, str) and cfg_model.strip() else None
+        model_cache[target_root] = resolved
         return resolved
 
     def _resolve_claude_tokens() -> int | None:
@@ -1848,7 +1873,13 @@ def changelog_sync_cmd(
             continue
 
         evaluator_value = _resolve_sync_evaluator(selected_root)
+        model_value = _resolve_sync_model(selected_root)
         claude_tokens = _resolve_claude_tokens() if evaluator_value == "claude" else None
+        model_suffix = f", model={model_value}" if model_value else ""
+        click.echo(
+            f"Sync: evaluating {candidate.get('tool', 'unknown')} {source_name} -> {selected_root} "
+            f"(run_id={sync_run_id}, evaluator={evaluator_value}{model_suffix})"
+        )
         appended, run_id, status = _generate_and_append_changelog_entry(
             tool=str(candidate.get("tool") or "unknown").strip().lower(),
             label=label,
@@ -1861,7 +1892,7 @@ def changelog_sync_cmd(
             source_match_json=None,
             actor=actor,
             evaluator=evaluator_value,
-            evaluator_model=model,
+            evaluator_model=model_value,
             claude_max_thinking_tokens=claude_tokens,
             transcript_output_dir=None,
             transcript_index_html=None,
