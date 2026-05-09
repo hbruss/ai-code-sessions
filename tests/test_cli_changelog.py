@@ -728,9 +728,12 @@ def test_changelog_sync_empty_model_override_resets_config_model(monkeypatch, tm
 
     monkeypatch.setenv("CTX_CHANGELOG_MODEL", "")
     monkeypatch.setenv("AI_CODE_SESSIONS_CHANGELOG_MODEL", "fallback-model")
+    before = len(captured)
     result = runner.invoke(cli, ["changelog", "sync", "--codex", "--project-root", str(repo_root)])
 
     assert result.exit_code == 0
+    assert len(captured) == before + 1
+    assert "processed=1" in result.output
     assert captured[-1]["evaluator_model"] is None
     assert "evaluator=claude, model=" not in result.output
 
