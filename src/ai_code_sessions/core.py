@@ -5009,7 +5009,7 @@ def _candidate_codex_rollout_paths_for_window(sessions_base: Path, since: dateti
             add_path(path)
 
     since_ts = since.timestamp()
-    for path in sorted(sessions_base.glob("*/*/*/rollout-*.jsonl")):
+    for path in sessions_base.glob("*/*/*/rollout-*.jsonl"):
         try:
             if path.stat().st_mtime < since_ts:
                 continue

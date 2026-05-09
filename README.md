@@ -176,7 +176,7 @@ ais ctx "Fix the login race condition" --codex
 
 ## The Normal Workflow
 
-`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, and append changelog entries only for sessions that have not already been recorded.
+`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, append entries for new sessions, and update sync-owned rows when the same live session grows.
 
 By default, changelog evaluation follows the normal evaluator precedence: explicit `--evaluator`, then `CTX_CHANGELOG_EVALUATOR` / `AI_CODE_SESSIONS_CHANGELOG_EVALUATOR`, then config `changelog.evaluator`, then `codex`.
 
