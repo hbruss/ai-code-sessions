@@ -1689,8 +1689,15 @@ def changelog_sync_cmd(
     env_evaluator = (
         (_env_first("CTX_CHANGELOG_EVALUATOR", "AI_CODE_SESSIONS_CHANGELOG_EVALUATOR") or "").strip()
     ).lower()
-    explicit_model = (model or "").strip()
-    env_model = (_env_first("CTX_CHANGELOG_MODEL", "AI_CODE_SESSIONS_CHANGELOG_MODEL") or "").strip()
+    explicit_model_provided = model is not None
+    explicit_model = (model.strip() or None) if model is not None else None
+    env_model_present = False
+    env_model: str | None = None
+    for env_name in ("CTX_CHANGELOG_MODEL", "AI_CODE_SESSIONS_CHANGELOG_MODEL"):
+        if env_name in os.environ:
+            env_model_present = True
+            env_model = os.environ.get(env_name, "").strip() or None
+            break
     config_cache: dict[Path, dict] = {}
     evaluator_cache: dict[Path, str] = {}
     model_cache: dict[Path, str | None] = {}
@@ -1722,9 +1729,9 @@ def changelog_sync_cmd(
         return resolved
 
     def _resolve_sync_model(target_root: Path) -> str | None:
-        if explicit_model:
+        if explicit_model_provided:
             return explicit_model
-        if env_model:
+        if env_model_present:
             return env_model
         if target_root in model_cache:
             return model_cache[target_root]

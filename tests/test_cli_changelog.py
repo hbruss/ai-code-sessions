@@ -481,6 +481,8 @@ def test_changelog_sync_uses_config_evaluator_default_when_flag_omitted(monkeypa
     monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
     monkeypatch.delenv("CTX_CHANGELOG_EVALUATOR", raising=False)
     monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.delenv("CTX_CHANGELOG_MODEL", raising=False)
+    monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_MODEL", raising=False)
     monkeypatch.setattr(
         cli_module,
         "_discover_native_sessions",
@@ -544,6 +546,8 @@ def test_changelog_sync_uses_each_resolved_repo_config_when_project_root_is_omit
     monkeypatch.delenv("AI_CODE_SESSIONS_CONFIG", raising=False)
     monkeypatch.delenv("CTX_CHANGELOG_EVALUATOR", raising=False)
     monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_EVALUATOR", raising=False)
+    monkeypatch.delenv("CTX_CHANGELOG_MODEL", raising=False)
+    monkeypatch.delenv("AI_CODE_SESSIONS_CHANGELOG_MODEL", raising=False)
     monkeypatch.setattr(
         cli_module,
         "_discover_native_sessions",
@@ -667,6 +671,68 @@ def test_changelog_sync_explicit_evaluator_and_model_override_env_and_config(mon
     assert captured["evaluator_model"] == "flag-model"
     assert "evaluator=codex, model=flag-model" in result.output
     assert "processed=1" in result.output
+
+
+def test_changelog_sync_empty_model_override_resets_config_model(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = tmp_path / "rollout-empty-model.jsonl"
+    source_jsonl.write_text("{}", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[changelog]\nevaluator = "claude"\nmodel = "config-model"\n', encoding="utf-8")
+
+    monkeypatch.setenv("AI_CODE_SESSIONS_CONFIG", str(config_path))
+    monkeypatch.setenv("CTX_CHANGELOG_EVALUATOR", "claude")
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-empty-model",
+                "prompt_summary": "Reset configured model",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        },
+    )
+    captured = []
+
+    def fake_generate_and_append(**kwargs):
+        captured.append(kwargs)
+        return True, f"run-empty-model-{len(captured)}", "appended"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    monkeypatch.setenv("CTX_CHANGELOG_MODEL", "env-model")
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--codex", "--project-root", str(repo_root), "--model", ""],
+    )
+
+    assert result.exit_code == 0
+    assert captured[-1]["evaluator_model"] is None
+    assert "evaluator=claude, model=" not in result.output
+
+    monkeypatch.setenv("CTX_CHANGELOG_MODEL", "")
+    monkeypatch.setenv("AI_CODE_SESSIONS_CHANGELOG_MODEL", "fallback-model")
+    result = runner.invoke(cli, ["changelog", "sync", "--codex", "--project-root", str(repo_root)])
+
+    assert result.exit_code == 0
+    assert captured[-1]["evaluator_model"] is None
+    assert "evaluator=claude, model=" not in result.output
 
 
 def test_changelog_sync_prompts_for_medium_confidence(monkeypatch, tmp_path):
