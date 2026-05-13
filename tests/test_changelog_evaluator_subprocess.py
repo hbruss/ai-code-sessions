@@ -429,3 +429,9 @@ def test_claude_evaluator_auth_failure_message_is_actionable(monkeypatch):
         assert "stdout_tail" not in message
     else:
         raise AssertionError("Expected ClickException")
+
+
+def test_claude_evaluator_formatted_auth_error_is_classified():
+    message = core._format_claude_evaluator_auth_error()
+
+    assert core._looks_like_evaluator_auth_error(message) is True

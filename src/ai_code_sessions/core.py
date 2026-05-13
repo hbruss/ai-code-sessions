@@ -3852,6 +3852,8 @@ def _looks_like_evaluator_auth_error(error_text: str) -> bool:
     return (
         ("api_error_status" in lower and "401" in lower)
         or "authentication_error" in lower
+        or "authentication failed" in lower
+        or "authentication error" in lower
         or "invalid authentication credentials" in lower
         or "failed to authenticate" in lower
         or "invalid api key" in lower
