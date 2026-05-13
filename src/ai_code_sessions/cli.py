@@ -1636,6 +1636,29 @@ def _can_prompt_for_changelog_sync_root() -> bool:
     return bool(stdin_isatty() and stdout_isatty())
 
 
+def _echo_changelog_sync_auth_failure_help(*, evaluator: str, project_root: Path, actor: str | None) -> None:
+    evaluator_value = (evaluator or "evaluator").strip().lower() or "evaluator"
+    click.echo(f"Sync: halting after {evaluator_value} evaluator authentication failure.")
+    if evaluator_value == "claude":
+        click.echo(
+            "Claude Code is configured as the changelog evaluator, but the headless model request could not "
+            "authenticate."
+        )
+        click.echo("Fix Claude authentication, then rerun this sync:")
+        click.echo("  claude auth logout")
+        click.echo("  claude auth login")
+        click.echo(
+            "  claude --print 'Return exactly OK.' --output-format json --no-session-persistence "
+            "--strict-mcp-config --mcp-config '{\"mcpServers\":{}}'"
+        )
+        click.echo("Alternative: rerun with `--evaluator codex` to use Codex as the changelog evaluator.")
+    else:
+        click.echo(f"Authenticate the {evaluator_value} evaluator CLI, then rerun this sync.")
+    actor_value = actor or _detect_actor(project_root=project_root)
+    failures_rel = f".changelog/{_slugify_actor(actor_value)}/failures.jsonl"
+    click.echo(f"Failure details were recorded in {failures_rel}.")
+
+
 @changelog_cli.command("sync")
 @click.option("--codex", "tool_codex", is_flag=True, help="Sync native Codex sessions only.")
 @click.option("--claude", "tool_claude", is_flag=True, help="Sync native Claude sessions only.")
@@ -1919,6 +1942,13 @@ def changelog_sync_cmd(
 
         failed += 1
         click.echo(f"Sync: failed run_id={run_id} ({candidate.get('tool', 'unknown')} {source_name})")
+        if status == "auth_failed":
+            _echo_changelog_sync_auth_failure_help(
+                evaluator=evaluator_value,
+                project_root=selected_root,
+                actor=actor,
+            )
+            break
 
     if not candidates:
         click.echo("Sync: no native sessions matched the requested window.")

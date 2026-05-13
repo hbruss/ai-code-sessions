@@ -738,6 +738,73 @@ def test_changelog_sync_empty_model_override_resets_config_model(monkeypatch, tm
     assert "evaluator=claude, model=" not in result.output
 
 
+def test_changelog_sync_halts_after_evaluator_auth_failure(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    first_source_jsonl = tmp_path / "rollout-auth-1.jsonl"
+    second_source_jsonl = tmp_path / "rollout-auth-2.jsonl"
+    first_source_jsonl.write_text("{}", encoding="utf-8")
+    second_source_jsonl.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli_module,
+        "_discover_native_sessions",
+        lambda **_kwargs: [
+            {
+                "tool": "codex",
+                "source_jsonl": str(first_source_jsonl),
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T00:05:00+00:00",
+                "session_id": "codex-auth-1",
+                "prompt_summary": "First auth failure",
+            },
+            {
+                "tool": "codex",
+                "source_jsonl": str(second_source_jsonl),
+                "start": "2026-01-01T00:10:00+00:00",
+                "end": "2026-01-01T00:15:00+00:00",
+                "session_id": "codex-auth-2",
+                "prompt_summary": "Should not run after auth failure",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_resolve_native_session_project",
+        lambda _candidate: {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "cwd resolves to a git toplevel with consistent evidence",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        },
+    )
+    calls = []
+
+    def fake_generate_and_append(**_kwargs):
+        calls.append(_kwargs["source_jsonl"].name)
+        if len(calls) > 1:
+            raise AssertionError("sync should stop after evaluator auth failure")
+        return False, "run-auth-1", "auth_failed"
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fake_generate_and_append)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--codex", "--project-root", str(repo_root), "--evaluator", "claude"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [first_source_jsonl.name]
+    assert "Sync: failed run_id=run-auth-1" in result.output
+    assert "Sync: halting after claude evaluator authentication failure." in result.output
+    assert "claude auth logout" in result.output
+    assert "claude auth login" in result.output
+    assert "claude --print 'Return exactly OK.'" in result.output
+    assert "--evaluator codex" in result.output
+    assert "processed=0 skipped=0 unresolved=0 failed=1" in result.output
+
+
 def test_changelog_sync_prompts_for_medium_confidence(monkeypatch, tmp_path):
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"
