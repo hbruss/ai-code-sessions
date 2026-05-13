@@ -219,6 +219,31 @@ tail -1 .changelog/*/failures.jsonl | jq '.error'
 tail -1 .changelog/*/failures.jsonl | jq '.stderr_tail'
 ```
 
+### "Claude evaluator authentication failed"
+
+**Cause:** `ais changelog sync` is scanning native sessions successfully, but Claude Code is configured as the changelog evaluator and the headless `claude --print` request cannot authenticate. `claude auth status` can still report logged in when the model request path is stale.
+
+**What happens:** Sync records the first failed row in `failures.jsonl`, prints recovery commands, and halts instead of processing every remaining candidate with the same broken evaluator state.
+
+**Solutions:**
+
+```bash
+claude auth logout
+claude auth login
+
+claude --print 'Return exactly OK.' \
+  --output-format json \
+  --no-session-persistence \
+  --strict-mcp-config \
+  --mcp-config '{"mcpServers":{}}'
+```
+
+Then rerun the original sync. To bypass Claude for the current run, use Codex as the evaluator:
+
+```bash
+ais changelog sync --codex --project-root "$PWD" --evaluator codex
+```
+
 ### "usage_limit_reached" / "HTTP 429"
 
 **Cause:** Rate limited by the evaluator API.

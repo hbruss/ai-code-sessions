@@ -3658,6 +3658,8 @@ def _run_claude_changelog_evaluator(
     stdout = _strip_ansi(proc.stdout or "").strip()
     stderr = _strip_ansi(proc.stderr or "").strip()
     if proc.returncode != 0:
+        if _looks_like_evaluator_auth_error("\n".join(part for part in (stdout, stderr) if part)):
+            raise click.ClickException(_format_claude_evaluator_auth_error())
         stderr_tail = _truncate_text_tail(stderr, 4000)
         stdout_tail = _truncate_text_tail(stdout, 2000)
         details = []
@@ -3670,6 +3672,8 @@ def _run_claude_changelog_evaluator(
 
     resp = _extract_json_object(stdout)
     if bool(resp.get("is_error")):
+        if _looks_like_evaluator_auth_error(str(resp)):
+            raise click.ClickException(_format_claude_evaluator_auth_error())
         raise click.ClickException(f"claude returned is_error=true. raw_response={_truncate_text(str(resp), 2000)}")
 
     structured = resp.get("structured_output")
@@ -3838,6 +3842,31 @@ def _looks_like_usage_limit_error(error_text: str) -> bool:
         or "rate limit reached" in lower
         or "rate limit hit" in lower
         or ("429" in re.findall(r"[0-9]+", lower))
+    )
+
+
+def _looks_like_evaluator_auth_error(error_text: str) -> bool:
+    if not isinstance(error_text, str) or not error_text:
+        return False
+    lower = error_text.lower()
+    return (
+        ("api_error_status" in lower and "401" in lower)
+        or "authentication_error" in lower
+        or "invalid authentication credentials" in lower
+        or "failed to authenticate" in lower
+        or "invalid api key" in lower
+        or "please run /login" in lower
+    )
+
+
+def _format_claude_evaluator_auth_error() -> str:
+    return (
+        "Claude evaluator authentication failed. Claude Code reported an authentication error for the "
+        "headless `claude --print` request.\n"
+        "Fix: run `claude auth logout` and `claude auth login`, then verify with "
+        "`claude --print 'Return exactly OK.' --output-format json --no-session-persistence "
+        "--strict-mcp-config --mcp-config '{\"mcpServers\":{}}'`.\n"
+        "Alternative: rerun with `--evaluator codex` to use Codex as the changelog evaluator."
     )
 
 
@@ -4140,6 +4169,8 @@ def _generate_and_append_changelog_entry(
         )
         if halt_on_429 and _looks_like_usage_limit_error(error_text):
             return False, run_id, "rate_limited"
+        if _looks_like_evaluator_auth_error(error_text):
+            return False, run_id, "auth_failed"
         return False, run_id, "failed"
 
 

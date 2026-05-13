@@ -398,3 +398,34 @@ def test_claude_evaluator_nonzero_exit(monkeypatch):
         assert "stderr_tail" in str(exc)
     else:
         raise AssertionError("Expected ClickException")
+
+
+def test_claude_evaluator_auth_failure_message_is_actionable(monkeypatch):
+    def fake_which(_name):
+        return "/usr/bin/claude"
+
+    def fake_run(*_args, **_kwargs):
+        payload = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "api_error_status": 401,
+            "result": "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        }
+        return _Proc(returncode=1, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(core.shutil, "which", fake_which)
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+
+    try:
+        core._run_claude_changelog_evaluator(prompt="hi", json_schema={})
+    except click.ClickException as exc:
+        message = str(exc)
+        assert "Claude evaluator authentication failed" in message
+        assert "claude auth logout" in message
+        assert "claude auth login" in message
+        assert "claude --print 'Return exactly OK.'" in message
+        assert "--evaluator codex" in message
+        assert "stdout_tail" not in message
+    else:
+        raise AssertionError("Expected ClickException")
