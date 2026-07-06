@@ -54,6 +54,7 @@ from .core import (
     _legacy_ctx_metadata,
     _load_config,
     _maybe_copy_native_jsonl_into_legacy_session_dir,
+    _native_session_candidate_from_source,
     _now_iso8601,
     _packaged_skill_path,
     _preview_changelog_append_status,
@@ -1563,15 +1564,23 @@ def changelog_cli():
     pass
 
 
-def _resolve_changelog_sync_tools(*, tool_codex: bool, tool_claude: bool, tool_all: bool) -> tuple[str, ...]:
-    if tool_all or (not tool_codex and not tool_claude):
-        return ("codex", "claude")
+def _resolve_changelog_sync_tools(
+    *,
+    tool_codex: bool,
+    tool_claude: bool,
+    tool_omp: bool,
+    tool_all: bool,
+) -> tuple[str, ...]:
+    if tool_all or (not tool_codex and not tool_claude and not tool_omp):
+        return ("codex", "claude", "omp")
 
     tools: list[str] = []
     if tool_codex:
         tools.append("codex")
     if tool_claude:
         tools.append("claude")
+    if tool_omp:
+        tools.append("omp")
     return tuple(tools)
 
 
@@ -1662,7 +1671,15 @@ def _echo_changelog_sync_auth_failure_help(*, evaluator: str, project_root: Path
 @changelog_cli.command("sync")
 @click.option("--codex", "tool_codex", is_flag=True, help="Sync native Codex sessions only.")
 @click.option("--claude", "tool_claude", is_flag=True, help="Sync native Claude sessions only.")
-@click.option("--all", "tool_all", is_flag=True, help="Sync both Codex and Claude sessions (default).")
+@click.option("--omp", "tool_omp", is_flag=True, help="Sync native OMP (oh-my-pi) sessions only.")
+@click.option("--all", "tool_all", is_flag=True, help="Sync Codex, Claude, and OMP sessions (default).")
+@click.option(
+    "--source-jsonl",
+    "source_jsonl",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Sync exactly one session from this native JSONL file (requires exactly one of --codex/--claude/--omp).",
+)
 @click.option(
     "--since",
     default=None,
@@ -1693,20 +1710,52 @@ def _echo_changelog_sync_auth_failure_help(*, evaluator: str, project_root: Path
 )
 @click.option("--model", help="Override model for the selected evaluator.")
 def changelog_sync_cmd(
-    tool_codex, tool_claude, tool_all, since, until, limit, project_root, dry_run, actor, evaluator, model
+    tool_codex,
+    tool_claude,
+    tool_omp,
+    tool_all,
+    source_jsonl,
+    since,
+    until,
+    limit,
+    project_root,
+    dry_run,
+    actor,
+    evaluator,
+    model,
 ):
-    """Sync recent native Codex/Claude sessions into per-repo changelog entries."""
+    """Sync recent native Codex/Claude/OMP sessions into per-repo changelog entries."""
     if limit is not None and limit <= 0:
         raise click.ClickException("--limit must be a positive integer")
 
-    requested_tools = _resolve_changelog_sync_tools(tool_codex=tool_codex, tool_claude=tool_claude, tool_all=tool_all)
-    scope_root = Path(project_root).resolve() if project_root else None
-    ref_root = scope_root or (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
-    since_dt, until_dt = _resolve_changelog_sync_window(since_ref=since, until_ref=until, ref_root=ref_root)
+    tool_flag_count = sum((bool(tool_codex), bool(tool_claude), bool(tool_omp)))
+    if source_jsonl is not None:
+        if tool_all or tool_flag_count != 1:
+            raise click.ClickException("--source-jsonl requires exactly one of --codex, --claude, or --omp")
+        if since is not None or until is not None:
+            raise click.ClickException("--source-jsonl cannot be combined with --since/--until")
 
-    candidates = _discover_native_sessions(tools=requested_tools, since=since_dt, until=until_dt)
-    if limit is not None and scope_root is None:
-        candidates = candidates[:limit]
+    requested_tools = _resolve_changelog_sync_tools(
+        tool_codex=tool_codex,
+        tool_claude=tool_claude,
+        tool_omp=tool_omp,
+        tool_all=tool_all,
+    )
+    scope_root = Path(project_root).resolve() if project_root else None
+
+    if source_jsonl is None:
+        ref_root = scope_root or (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
+        since_dt, until_dt = _resolve_changelog_sync_window(since_ref=since, until_ref=until, ref_root=ref_root)
+        candidates = _discover_native_sessions(tools=requested_tools, since=since_dt, until=until_dt)
+        if limit is not None and scope_root is None:
+            candidates = candidates[:limit]
+    else:
+        source_tool = requested_tools[0]
+        try:
+            candidate = _native_session_candidate_from_source(tool=source_tool, source_jsonl=source_jsonl)
+        except ValueError as exc:
+            raise click.ClickException(f"--source-jsonl {source_jsonl}: {exc}") from exc
+        candidates = [candidate]
 
     explicit_evaluator = (evaluator or "").strip().lower()
     env_evaluator = (
@@ -2477,7 +2526,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 @click.option("--actor", help="Filter by actor.")
 @click.option(
     "--tool",
-    type=click.Choice(["codex", "claude"], case_sensitive=False),
+    type=click.Choice(["codex", "claude", "omp"], case_sensitive=False),
     help="Filter by tool.",
 )
 @click.option(

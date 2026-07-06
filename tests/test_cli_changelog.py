@@ -26,6 +26,51 @@ def _write_entries(path: Path, entries: list[str]) -> None:
     path.write_text("\n".join(entries) + "\n", encoding="utf-8")
 
 
+def _write_omp_session_jsonl(
+    path: Path,
+    *,
+    cwd: Path,
+    session_id: str = "omp-cli",
+    parent_session: str | None = None,
+) -> Path:
+    session_header = {
+        "type": "session",
+        "version": 3,
+        "id": session_id,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": str(cwd),
+        "title": f"Title for {session_id}",
+    }
+    if parent_session is not None:
+        session_header["parentSession"] = parent_session
+
+    rows = [
+        {
+            "type": "title",
+            "v": 1,
+            "title": f"Title for {session_id}",
+            "source": "auto",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "pad": "",
+        },
+        session_header,
+        {
+            "type": "message",
+            "id": f"user-{session_id}",
+            "parentId": None,
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": f"Prompt for {session_id}"}],
+            },
+        },
+        {"type": "model_change", "id": f"model-{session_id}", "timestamp": "2026-01-01T00:05:00Z"},
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
 def _native_sync_entry(
     *,
     run_id: str,
@@ -414,10 +459,253 @@ def test_changelog_sync_defaults_to_48_hours(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0
-    assert captured["tools"] == ("codex", "claude")
+    assert captured["tools"] == ("codex", "claude", "omp")
     assert timedelta(hours=47, minutes=59) <= captured["until"] - captured["since"] <= timedelta(hours=48, minutes=1)
     assert "[DRY RUN]" in result.output
     assert "processed=0" in result.output
+
+
+def test_changelog_sync_omp_flag_scans_only_omp(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_discover_native_sessions(*, tools, since, until):
+        captured["tools"] = tools
+        captured["since"] = since
+        captured["until"] = until
+        return []
+
+    monkeypatch.setattr(cli_module, "_discover_native_sessions", fake_discover_native_sessions)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "sync",
+            "--omp",
+            "--project-root",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["tools"] == ("omp",)
+    assert "[DRY RUN]" in result.output
+    assert "processed=0" in result.output
+
+
+def test_changelog_sync_source_jsonl_omp_dry_run_bypasses_discovery(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = _write_omp_session_jsonl(
+        tmp_path / ".omp" / "agent" / "sessions" / "-repo" / "2026-01-01T00-00-00Z_omp-cli.jsonl",
+        cwd=repo_root,
+        session_id="omp-cli",
+    )
+
+    def fail_if_discovered(**_kwargs):
+        raise AssertionError("--source-jsonl should build one candidate without native discovery")
+
+    monkeypatch.setattr(cli_module, "_discover_native_sessions", fail_if_discovered)
+
+    def fake_resolve_native_session_project(candidate):
+        assert candidate["tool"] == "omp"
+        assert candidate["source_jsonl"] == str(source_jsonl.resolve())
+        assert candidate["prompt_summary"] == "Prompt for omp-cli"
+        return {
+            "project_root": str(repo_root),
+            "confidence": "high",
+            "reason": "source cwd resolves to repo",
+            "evidence": {"plausible_project_roots": [str(repo_root)]},
+        }
+
+    monkeypatch.setattr(cli_module, "_resolve_native_session_project", fake_resolve_native_session_project)
+    preview_calls = []
+
+    def fake_sync_preview_action(**kwargs):
+        preview_calls.append(kwargs)
+        return "run-source-jsonl", "append"
+
+    monkeypatch.setattr(cli_module, "_sync_preview_action", fake_sync_preview_action)
+
+    def fail_if_appended(**_kwargs):
+        raise AssertionError("append should not run during dry-run")
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fail_if_appended)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "changelog",
+            "sync",
+            "--omp",
+            "--source-jsonl",
+            str(source_jsonl),
+            "--project-root",
+            str(repo_root),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert preview_calls[0]["tool"] == "omp"
+    assert preview_calls[0]["source_jsonl"] == source_jsonl.resolve()
+    assert "[DRY RUN] Sync: would append run_id=run-source-jsonl" in result.output
+    assert f"(omp {source_jsonl.name}) -> {repo_root.resolve()}" in result.output
+    assert "processed=1" in result.output
+
+
+def test_changelog_sync_source_jsonl_rejects_omp_parent_session(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = _write_omp_session_jsonl(
+        tmp_path / "omp-subagent-source.jsonl",
+        cwd=repo_root,
+        session_id="omp-subagent",
+        parent_session="parent-session-id",
+    )
+
+    def fail_if_discovered(**_kwargs):
+        raise AssertionError("parentSession --source-jsonl should not fall back to discovery")
+
+    monkeypatch.setattr(cli_module, "_discover_native_sessions", fail_if_discovered)
+
+    def fail_if_resolved(_candidate):
+        raise AssertionError("parentSession --source-jsonl should not resolve a project")
+
+    monkeypatch.setattr(cli_module, "_resolve_native_session_project", fail_if_resolved)
+
+    def fail_if_previewed(**_kwargs):
+        raise AssertionError("parentSession --source-jsonl should not preview sync")
+
+    monkeypatch.setattr(cli_module, "_sync_preview_action", fail_if_previewed)
+
+    def fail_if_appended(**_kwargs):
+        raise AssertionError("parentSession --source-jsonl should not append")
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fail_if_appended)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--omp", "--source-jsonl", str(source_jsonl)],
+    )
+
+    assert result.exit_code != 0
+    assert f"Error: --source-jsonl {source_jsonl}:" in result.output
+    assert "parentSession" in result.output
+    assert "only top-level sessions" in result.output
+
+
+def test_changelog_sync_source_jsonl_rejects_omp_sidecar_transcript(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sessions_project_dir = tmp_path / ".omp" / "agent" / "sessions" / "-repo"
+    _write_omp_session_jsonl(
+        sessions_project_dir / "2026-01-01T00-00-00Z_omp-main.jsonl",
+        cwd=repo_root,
+        session_id="omp-main",
+    )
+    source_jsonl = _write_omp_session_jsonl(
+        sessions_project_dir / "2026-01-01T00-00-00Z_omp-main" / "__advisor.jsonl",
+        cwd=repo_root,
+        session_id="omp-advisor",
+    )
+
+    def fail_if_discovered(**_kwargs):
+        raise AssertionError("sidecar --source-jsonl should not fall back to discovery")
+
+    monkeypatch.setattr(cli_module, "_discover_native_sessions", fail_if_discovered)
+
+    def fail_if_resolved(_candidate):
+        raise AssertionError("sidecar --source-jsonl should not resolve a project")
+
+    monkeypatch.setattr(cli_module, "_resolve_native_session_project", fail_if_resolved)
+
+    def fail_if_previewed(**_kwargs):
+        raise AssertionError("sidecar --source-jsonl should not preview sync")
+
+    monkeypatch.setattr(cli_module, "_sync_preview_action", fail_if_previewed)
+
+    def fail_if_appended(**_kwargs):
+        raise AssertionError("sidecar --source-jsonl should not append")
+
+    monkeypatch.setattr(cli_module, "_generate_and_append_changelog_entry", fail_if_appended)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--omp", "--source-jsonl", str(source_jsonl)],
+    )
+
+    assert result.exit_code != 0
+    assert f"Error: --source-jsonl {source_jsonl}:" in result.output
+    assert "nested under parent session" in result.output
+    assert "only top-level sessions" in result.output
+
+
+def test_changelog_sync_source_jsonl_requires_exactly_one_tool_flag(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = _write_omp_session_jsonl(tmp_path / "omp-source.jsonl", cwd=repo_root)
+
+    runner = CliRunner()
+
+    no_flag = runner.invoke(cli, ["changelog", "sync", "--source-jsonl", str(source_jsonl)])
+    assert no_flag.exit_code != 0
+    assert "Error: --source-jsonl requires exactly one of --codex, --claude, or --omp" in no_flag.output
+
+    two_flags = runner.invoke(
+        cli,
+        ["changelog", "sync", "--codex", "--omp", "--source-jsonl", str(source_jsonl)],
+    )
+    assert two_flags.exit_code != 0
+    assert "Error: --source-jsonl requires exactly one of --codex, --claude, or --omp" in two_flags.output
+
+
+def test_changelog_sync_source_jsonl_rejects_since_until(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = _write_omp_session_jsonl(tmp_path / "omp-source.jsonl", cwd=repo_root)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--omp", "--source-jsonl", str(source_jsonl), "--since", "2026-01-01"],
+    )
+
+    assert result.exit_code != 0
+    assert "Error: --source-jsonl cannot be combined with --since/--until" in result.output
+
+
+def test_changelog_sync_source_jsonl_rejects_tool_shape_mismatch(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    source_jsonl = _write_omp_session_jsonl(tmp_path / "omp-source.jsonl", cwd=repo_root)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["changelog", "sync", "--claude", "--source-jsonl", str(source_jsonl)])
+
+    assert result.exit_code != 0
+    assert f"Error: --source-jsonl {source_jsonl}: not a claude session log" in result.output
+
+
+def test_changelog_sync_source_jsonl_rejects_unreadable_file(tmp_path):
+    source_jsonl = tmp_path / "not-utf8.jsonl"
+    source_jsonl.write_bytes(b"\xff\xfe not json")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["changelog", "sync", "--omp", "--source-jsonl", str(source_jsonl)],
+    )
+
+    assert result.exit_code != 0
+    assert f"Error: --source-jsonl {source_jsonl}: not readable UTF-8 JSONL" in result.output
+    assert "Traceback" not in result.output
+    assert "UnicodeDecodeError" not in result.output
 
 
 def test_changelog_sync_uses_env_evaluator_default_when_flag_omitted(monkeypatch, tmp_path):

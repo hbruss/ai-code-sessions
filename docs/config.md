@@ -172,6 +172,7 @@ Environment variables override config file settings. Useful for:
 | `CTX_TZ` | Timezone for folder names | `America/Los_Angeles` |
 | `CTX_CODEX_CMD` | Codex executable name/path | `codex` |
 | `CTX_CLAUDE_CMD` | Claude executable name/path | `claude` |
+| `CTX_OMP_SESSIONS_DIR` | OMP sessions directory for changelog sync | `~/.omp/agent/sessions` |
 
 ### Changelog Settings
 
@@ -215,6 +216,7 @@ All available settings:
 export CTX_TZ="America/Los_Angeles"
 export CTX_CODEX_CMD="codex"
 export CTX_CLAUDE_CMD="claude"
+export CTX_OMP_SESSIONS_DIR="$HOME/.omp/agent/sessions"
 
 # Changelog settings
 export CTX_CHANGELOG=1

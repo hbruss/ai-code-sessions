@@ -29,9 +29,9 @@ I discovered his project through his [blog post](https://simonwillison.net/2025/
 
 What I've added on top:
 
-- **Codex CLI support** (in addition to Claude Code)
+- **Codex CLI and OMP sync support** (in addition to Claude Code)
 - **Automatic source matching** for finding the right log file when running concurrent sessions
-- **A native changelog sync workflow** for processing recent Codex and Claude sessions without wrapping them
+- **A native changelog sync workflow** for processing recent Codex, Claude, and OMP sessions without wrapping them
 - **An optional `ais ctx` workflow** for naming sessions and organizing transcript exports by project
 - **An append-only changelog system** for generating structured summaries
 - **An interactive onboarding wizard** for workflow setup, readiness checks, and manual skill-install guidance
@@ -50,10 +50,11 @@ AI coding tools generate verbose, machine-formatted logs:
 
 - **Codex**: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - **Claude Code**: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
+- **OMP**: `~/.omp/agent/sessions/<encoded-project>/*.jsonl`
 
 These files are technically readable, but practically useless for humans. Thousands of lines of JSON. Tool calls nested in content blocks nested in messages. Simon's project transforms that chaos into something you'd actually want to read.
 
-This fork extends his work to support both Codex and Claude, with some workflow conveniences for people who use both.
+This fork extends his work to support Codex, Claude, and OMP changelog workflows, with conveniences for people who use multiple AI coding tools.
 
 ## What You Get
 
@@ -156,8 +157,11 @@ claude
 ### 5. Sync the Changelog
 
 ```bash
-# Sync Codex sessions that overlap the last 48 hours
-ais changelog sync --codex
+# Sync all supported native sessions that overlap the last 48 hours
+ais changelog sync
+
+# Sync OMP sessions only
+ais changelog sync --omp
 
 # Preview Claude sessions without writing
 ais changelog sync --claude --dry-run
@@ -176,21 +180,24 @@ ais ctx "Fix the login race condition" --codex
 
 ## The Normal Workflow
 
-`ais changelog sync` is the primary workflow for this tool now. Use Codex or Claude normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, append entries for new sessions, and update sync-owned rows when the same live session grows.
+`ais changelog sync` is the primary workflow for this tool now. Use Codex, Claude, or OMP normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, append entries for new sessions, and update sync-owned rows when the same live session grows.
 
 By default, changelog evaluation follows the normal precedence: explicit `--evaluator` / `--model`, then `CTX_CHANGELOG_EVALUATOR` / `CTX_CHANGELOG_MODEL` (or the `AI_CODE_SESSIONS_*` equivalents), then config `changelog.evaluator` / `changelog.model`, then tool defaults.
 
 ### Basic Usage
 
 ```bash
-# Default: scan sessions that overlap the last 48 hours
-ais changelog sync --codex
+# Default: scan Codex, Claude, and OMP sessions that overlap the last 48 hours
+ais changelog sync
 
-# Sync recent sessions for the current repo only
+# Sync recent Codex sessions for the current repo only
 ais changelog sync --codex --project-root "$PWD"
 
-# Scan both tools over a larger window
+# Scan all tools over a larger window
 ais changelog sync --all --since "7 days ago"
+
+# Sync one explicit OMP JSONL file
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
 
 # Preview actions without writing
 ais changelog sync --claude --dry-run
@@ -198,9 +205,9 @@ ais changelog sync --claude --dry-run
 
 ### What It Does
 
-- Discovers native Codex and Claude sessions that overlap the scan window
-- Includes long-running Codex sessions that started earlier but ended or were updated during the window
-- Ignores explicit Codex subagent sessions (native `session_meta.source.subagent.thread_spawn` provenance)
+- Discovers native Codex, Claude, and OMP sessions that overlap the scan window
+- Includes long-running sessions that started earlier but ended or were updated during the window
+- Ignores explicit Codex subagent sessions and OMP sessions marked with `parentSession`
 - Resolves the target git repo from session evidence, including Codex tool-call `workdir` and local path usage
 - Prompts you when multiple repos are plausible
 - Reports ambiguous sessions as unresolved in non-interactive runs
@@ -272,11 +279,14 @@ After each session, you'll find:
 ### Normal Usage
 
 ```bash
-# Default: sessions that overlap the last 48 hours
-ais changelog sync --codex
+# Default: sessions from Codex, Claude, and OMP that overlap the last 48 hours
+ais changelog sync
 
-# Sync both tools over a custom window
+# Sync all tools over a custom window
 ais changelog sync --all --since "7 days ago"
+
+# Sync OMP sessions only
+ais changelog sync --omp
 
 # Restrict writes to one repo and preview the result
 ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
@@ -484,18 +494,21 @@ ais export-latest \
 
 ### `ais changelog sync`
 
-Sync recent native Codex or Claude sessions into the correct repo changelog.
+Sync recent native Codex, Claude, or OMP sessions into the correct repo changelog.
 
 ```bash
-ais changelog sync --codex
+ais changelog sync
+ais changelog sync --omp
 ais changelog sync --all --since "7 days ago"
 ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--codex`, `--claude`, `--all` | Select which native session stores to scan |
+| `--codex`, `--claude`, `--omp`, `--all` | Select which native session stores to scan (`--all` and no flags scan all supported tools) |
 | `--since`, `--until` | Define the scan window (`--since` defaults to 48 hours before `--until`/now; sessions match by overlap) |
+| `--source-jsonl` | Sync exactly one native JSONL file; requires exactly one of `--codex`, `--claude`, or `--omp` |
 | `--limit` | Limit the number of discovered sessions considered |
 | `--project-root` | Restrict writes to one repo; matching medium-confidence sessions do not prompt |
 | `--dry-run` | Show planned appends without writing |
@@ -504,6 +517,8 @@ ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --
 | `--model` | Model override for the evaluator |
 
 `ais changelog sync --codex` ignores explicit Codex subagent sessions discovered from native rollout provenance (`session_meta.source.subagent.thread_spawn`).
+
+`ais changelog sync --omp` scans top-level OMP session files under `~/.omp/agent/sessions/<encoded-project>/*.jsonl` and ignores sessions marked with `parentSession`; set `CTX_OMP_SESSIONS_DIR` to use a different sessions directory.
 
 Codex sessions are stored under their start-day folder, but sync matches by session overlap with the scan window. Long-running Codex sessions can still be discovered when their rollout file was updated during the window.
 
@@ -566,7 +581,7 @@ ais changelog since yesterday --tool codex  # Filter by tool
 | `--format` | Output format: `summary`, `json`, `bullets`, `table` |
 | `--project-root` | Git repo root |
 | `--actor` | Filter by actor |
-| `--tool` | Filter by tool (`codex` or `claude`) |
+| `--tool` | Filter by tool (`codex`, `claude`, or `omp`) |
 | `--tag` | Filter by tag (repeatable) |
 
 ### `ais changelog lint`
@@ -656,6 +671,7 @@ claude_thinking_tokens = 8192  # Claude-specific setting
 | `CTX_TZ` | Timezone for session folder names |
 | `CTX_CODEX_CMD` | Override Codex executable path |
 | `CTX_CLAUDE_CMD` | Override Claude executable path |
+| `CTX_OMP_SESSIONS_DIR` | Override OMP sessions directory for changelog sync (default `~/.omp/agent/sessions`) |
 | `CTX_CHANGELOG` | Enable changelog (`1`/`true`) |
 | `CTX_ACTOR` | Changelog actor (username) |
 | `CTX_CHANGELOG_EVALUATOR` | `codex` or `claude` |
@@ -694,7 +710,7 @@ ais json /path/to/correct-file.jsonl -o .codex/sessions/my-session --json
 
 The implementation lives in a single focused module (`src/ai_code_sessions/__init__.py`, ~5,000 lines) with Jinja2 templates for HTML rendering. Key patterns:
 
-- **Format normalization**: Both Codex and Claude logs are parsed into a common "loglines" format
+- **Format normalization**: Codex, Claude, and OMP logs are parsed into a common "loglines" format
 - **Content block handling**: Modern multi-block messages (text + images + tool calls) are rendered correctly
 - **Graceful degradation**: Export succeeds even if changelog generation fails
 - **Content-addressed deduplication**: Changelog entries have content-based IDs to prevent duplicates

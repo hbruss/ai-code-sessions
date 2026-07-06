@@ -69,6 +69,95 @@ def _write_claude_session(
     )
 
 
+def _write_omp_session(
+    sessions_root: Path,
+    *,
+    dirname: str,
+    filename: str,
+    start: str,
+    end: str,
+    cwd: Path | str,
+    session_id: str,
+    parent_session: str | None = None,
+) -> Path:
+    tool_call_id = f"call-{session_id}"
+    header = {
+        "type": "session",
+        "version": 3,
+        "id": session_id,
+        "timestamp": start,
+        "cwd": str(cwd),
+        "title": f"Title for {session_id}",
+        "titleSource": "auto",
+    }
+    if parent_session is not None:
+        header["parentSession"] = parent_session
+
+    return _write_jsonl(
+        sessions_root / dirname / filename,
+        [
+            {
+                "type": "title",
+                "v": 1,
+                "title": f"Title for {session_id}",
+                "source": "auto",
+                "updatedAt": start,
+                "pad": "",
+            },
+            header,
+            {
+                "type": "message",
+                "id": f"user-{session_id}",
+                "parentId": None,
+                "timestamp": start,
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Prompt for {session_id}"},
+                        {"type": "image", "data": "synthetic-base64", "mimeType": "image/png"},
+                    ],
+                },
+            },
+            {
+                "type": "message",
+                "id": f"assistant-{session_id}",
+                "parentId": f"user-{session_id}",
+                "timestamp": start,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": f"Assistant text for {session_id}"},
+                        {"type": "thinking", "thinking": f"Thinking for {session_id}"},
+                        {
+                            "type": "toolCall",
+                            "id": tool_call_id,
+                            "name": "Bash",
+                            "arguments": {"command": "pwd", "cwd": str(cwd)},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "message",
+                "id": f"result-{session_id}",
+                "parentId": f"assistant-{session_id}",
+                "timestamp": end,
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": tool_call_id,
+                    "toolName": "Bash",
+                    "content": [
+                        {"type": "text", "text": f"Tool output for {session_id}"},
+                        {"type": "image", "data": "synthetic-base64", "mimeType": "image/png"},
+                    ],
+                    "isError": False,
+                },
+            },
+            {"type": "model_change", "id": f"model-{session_id}", "parentId": None, "timestamp": end},
+        ],
+    )
+
+
 def test_native_session_identity_excludes_end_and_keeps_session_id(tmp_path):
     path = tmp_path / "rollout-abc.jsonl"
     identity = core._canonical_session_identity_for_source(
@@ -129,6 +218,62 @@ def test_session_identity_key_falls_back_to_path_and_start():
     )
 
     assert key == ("path_start", "codex", "/tmp/a.jsonl", "2026-01-01T00:00:00+00:00")
+
+
+def test_omp_session_identity_uses_header_session_id_and_normalizes_start(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source_jsonl = _write_omp_session(
+        tmp_path / "omp",
+        dirname="-repo",
+        filename="2026-01-01T00-00-00Z_omp-session-123.jsonl",
+        start="2026-01-01T00:00:00Z",
+        end="2026-01-01T00:05:00Z",
+        cwd=repo,
+        session_id="omp-session-123",
+    )
+
+    identity_from_z = core._canonical_session_identity_from_transcript(
+        tool="omp",
+        source_jsonl=source_jsonl,
+        source_match_json=None,
+        start="2026-01-01T00:00:00Z",
+        end="2026-01-01T00:05:00Z",
+    )
+    identity_from_offset = core._canonical_session_identity_from_transcript(
+        tool="omp",
+        source_jsonl=source_jsonl,
+        source_match_json=None,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00.000000+00:00",
+    )
+
+    assert identity_from_z == identity_from_offset
+    assert identity_from_z["tool"] == "omp"
+    assert identity_from_z["session_id"] == "omp-session-123"
+    assert core._session_identity_key(identity_from_z) == ("session_id", "omp", "omp-session-123")
+    assert core._native_session_id_for_source(tool="omp", source_jsonl=source_jsonl) == "omp-session-123"
+
+
+def test_omp_session_times_recovers_header_and_last_timestamp(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source_jsonl = _write_omp_session(
+        tmp_path / "omp",
+        dirname="-repo",
+        filename="2026-01-01T00-00-00Z_omp-times.jsonl",
+        start="2026-01-01T00:00:00Z",
+        end="2026-01-01T00:05:00Z",
+        cwd=repo,
+        session_id="omp-times",
+    )
+
+    start_dt, end_dt, cwd, session_id = core._omp_session_times(source_jsonl)
+
+    assert start_dt == datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    assert end_dt == datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+    assert cwd == str(repo)
+    assert session_id == "omp-times"
 
 
 def test_entry_session_identity_recanonicalizes_source_identity_and_allows_null_transcript_fields(tmp_path):
@@ -222,6 +367,69 @@ def test_generate_and_append_changelog_entry_records_source_metadata(tmp_path, m
         start="2026-01-01T00:00:00+00:00",
         end="2026-01-01T00:05:00+00:00",
     )
+
+
+def test_generate_and_append_changelog_entry_accepts_omp_tool_schema(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    source_jsonl = _write_omp_session(
+        tmp_path / "omp",
+        dirname="-repo",
+        filename="2026-01-01T00-00-00Z_omp-schema.jsonl",
+        start="2026-01-01T00:00:00Z",
+        end="2026-01-01T00:05:00Z",
+        cwd=project_root,
+        session_id="omp-schema",
+    )
+
+    monkeypatch.setattr(
+        core,
+        "_build_changelog_digest",
+        lambda **_: {
+            "delta": {
+                "touched_files": {"created": [], "modified": [], "deleted": [], "moved": []},
+                "tests": [],
+                "commits": [],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "_run_codex_changelog_evaluator",
+        lambda **_: {
+            "summary": "OMP schema append succeeded",
+            "bullets": ["Recorded an OMP-sourced changelog entry."],
+            "tags": [],
+            "notes": None,
+        },
+    )
+
+    ok, _, status = core._generate_and_append_changelog_entry(
+        tool="omp",
+        label="OMP schema",
+        cwd=str(project_root),
+        project_root=project_root,
+        session_dir=source_jsonl.parent,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:05:00+00:00",
+        source_jsonl=source_jsonl,
+        source_match_json=None,
+        actor="tester",
+        evaluator="codex",
+        evaluator_model=None,
+        claude_max_thinking_tokens=None,
+        continuation_of_run_id=None,
+        halt_on_429=False,
+        transcript_output_dir=None,
+        transcript_index_html=None,
+    )
+
+    assert ok is True
+    assert status == "appended"
+    entry = json.loads((project_root / ".changelog" / "tester" / "entries.jsonl").read_text(encoding="utf-8"))
+    assert entry["tool"] == "omp"
+    assert entry["tool"] in core._CHANGELOG_ENTRY_SCHEMA["properties"]["tool"]["enum"]
+    assert entry["source"]["identity"]["session_id"] == "omp-schema"
 
 
 def test_preview_changelog_append_status_returns_exists_when_sync_owned_session_end_grows(tmp_path, monkeypatch):
@@ -688,6 +896,72 @@ def test_discover_native_sessions_filters_to_overlapping_window_and_sorts_newest
     assert sessions[0]["end"] == "2026-01-01T03:00:00+00:00"
     assert sessions[1]["end"] == "2026-01-01T02:15:00+00:00"
     assert sessions[2]["end"] == "2026-01-01T01:15:00+00:00"
+
+
+def test_discover_native_omp_sessions_excludes_sidecars_backups_and_parent_sessions(tmp_path, monkeypatch):
+    omp_root = tmp_path / ".omp" / "agent" / "sessions"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(core._core, "_user_omp_sessions_dir", lambda: omp_root)
+
+    main_path = _write_omp_session(
+        omp_root,
+        dirname="-repo",
+        filename="2026-01-01T00-10-00Z_omp-main.jsonl",
+        start="2026-01-01T00:10:00Z",
+        end="2026-01-01T00:20:00Z",
+        cwd=repo,
+        session_id="omp-main",
+    )
+    _write_omp_session(
+        omp_root,
+        dirname=f"-repo/{main_path.stem}",
+        filename="__advisor.jsonl",
+        start="2026-01-01T00:11:00Z",
+        end="2026-01-01T00:12:00Z",
+        cwd=repo,
+        session_id="omp-advisor",
+    )
+    _write_omp_session(
+        omp_root,
+        dirname=f"-repo/{main_path.stem}",
+        filename="agent-xyz.jsonl",
+        start="2026-01-01T00:11:00Z",
+        end="2026-01-01T00:12:00Z",
+        cwd=repo,
+        session_id="omp-agent",
+    )
+    _write_omp_session(
+        omp_root,
+        dirname="-repo",
+        filename="2026-01-01T00-15-00Z_omp-backup.jsonl.123.bak",
+        start="2026-01-01T00:15:00Z",
+        end="2026-01-01T00:16:00Z",
+        cwd=repo,
+        session_id="omp-backup",
+    )
+    _write_omp_session(
+        omp_root,
+        dirname="-repo",
+        filename="2026-01-01T00-17-00Z_omp-parent.jsonl",
+        start="2026-01-01T00:17:00Z",
+        end="2026-01-01T00:18:00Z",
+        cwd=repo,
+        session_id="omp-parent",
+        parent_session="omp-main",
+    )
+
+    sessions = core._discover_native_sessions(
+        tools=("omp",),
+        since=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(session["tool"], Path(session["source_jsonl"]).name) for session in sessions] == [("omp", main_path.name)]
+    assert sessions[0]["session_id"] == "omp-main"
+    assert sessions[0]["cwd"] == str(repo.resolve())
+    assert sessions[0]["prompt_summary"] == "Prompt for omp-main"
 
 
 def test_discover_native_codex_sessions_includes_older_start_day_when_file_updated_in_window(tmp_path, monkeypatch):

@@ -23,8 +23,9 @@ rg --version
 # 3. Verify session logs exist
 ls -la ~/.codex/sessions/
 ls -la ~/.claude/projects/
+ls -la ~/.omp/agent/sessions/
 
-# 4. Check recent session directory
+# 4. Check recent local transcript directories
 ls -la .codex/sessions/ || ls -la .claude/sessions/
 ```
 
@@ -104,6 +105,31 @@ ls ~/.claude/projects/
 
 # Try exporting a known file directly
 ais json ~/.claude/projects/*/abc123.jsonl -o ./test --open
+```
+
+### OMP sessions are not discovered by sync
+
+**Causes:**
+
+1. OMP didn't write any logs
+2. Logs are in an unexpected location (set `CTX_OMP_SESSIONS_DIR` to the sessions directory)
+3. The encoded project folder doesn't match the repo you expect
+4. Time window doesn't match
+
+**Solutions:**
+
+```bash
+# Check if any OMP logs exist (default location)
+ls ~/.omp/agent/sessions/*/*.jsonl 2>/dev/null | head -5
+
+# If CTX_OMP_SESSIONS_DIR is set, check there instead
+[ -n "$CTX_OMP_SESSIONS_DIR" ] && ls "$CTX_OMP_SESSIONS_DIR"/*/*.jsonl 2>/dev/null | head -5
+
+# List encoded project folders
+ls ~/.omp/agent/sessions/
+
+# Try syncing a known file directly
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl" --dry-run
 ```
 
 ### Transcript shows wrong session content

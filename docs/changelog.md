@@ -1,6 +1,6 @@
 # Changelog Generation
 
-`ai-code-sessions` can generate structured changelog entries either from recent native Codex/Claude sessions or from exported transcript directories. These aren't git commit messages; they're higher-level summaries of what an entire AI-assisted coding session accomplished.
+`ai-code-sessions` can generate structured changelog entries either from recent native Codex, Claude, or OMP sessions or from exported transcript directories. These aren't git commit messages; they're higher-level summaries of what an entire AI-assisted coding session accomplished.
 
 ## Why Changelogs?
 
@@ -28,7 +28,7 @@ Each changelog entry includes:
 | `schema_version` | Entry schema version | `1` |
 | `run_id` | Content-based hash (prevents duplicates) | `"c2157e415f33ca4a"` |
 | `created_at` | When the entry was created | `"2026-01-04T10:17:01.096900+00:00"` |
-| `tool` | Session source | `"codex"` |
+| `tool` | Session source (`"codex"`, `"claude"`, `"omp"`, or `"unknown"`) | `"codex"` |
 | `actor` | Changelog actor | `"russronchi"` |
 | `project` | Repo name | `"ai-code-sessions"` |
 | `project_root` | Repo root path | `"$HOME/.../ai-code-sessions"` |
@@ -78,8 +78,14 @@ This is the normal post-session workflow:
 # Sync Codex sessions that overlap the last 48 hours
 ais changelog sync --codex
 
-# Scan both tools over a custom window
+# Sync OMP sessions that overlap the last 48 hours
+ais changelog sync --omp
+
+# Scan all tools over a custom window
 ais changelog sync --all --since "7 days ago"
+
+# Sync one explicit OMP JSONL file
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
 
 # Preview what would be written
 ais changelog sync --claude --dry-run
@@ -89,12 +95,14 @@ Key behaviors:
 
 - The default scan window is the last 48 hours
 - Codex sync discovers sessions by overlap with the scan window, including long-running sessions that started earlier but ended or were updated during the window
+- OMP sync discovers top-level sessions under `~/.omp/agent/sessions/<encoded-project>/*.jsonl`; set `CTX_OMP_SESSIONS_DIR` to override the sessions directory
 - `ais` writes only when repo targeting is high confidence
 - Codex tool-call `workdir` and local path usage can provide medium-confidence repo evidence when the rollout `cwd` is broad
 - If multiple repos are plausible, `ais` prompts you to choose
 - In non-interactive runs, ambiguous sessions are reported as unresolved instead of prompting
 - If repo evidence is too weak, the session is reported as unresolved and skipped
 - `ais changelog sync --codex` ignores Codex non-top-level sessions discovered from native rollout provenance (`session_meta.source.subagent`), including explicit spawned subagents
+- `ais changelog sync --omp` ignores OMP sessions marked with `parentSession`
 - Native-session sync uses stable logical session identity, so re-running sync for the same live session does not append duplicate rows
 - Sync-owned native-session rows are updated in place as the same session grows
 - If a richer export-owned row already represents that session, sync leaves it alone instead of replacing it

@@ -274,6 +274,14 @@ def _get_jsonl_summary(filepath, max_length=200):
             if text and not text.startswith("<"):
                 return text
 
+        if obj.get("type") == "message":
+            message = obj.get("message")
+            if isinstance(message, dict) and message.get("role") == "user":
+                text = extract_text_from_content(message.get("content"))
+                if text and not text.startswith("<"):
+                    return text
+            return ""
+
         if obj.get("type") != "response_item":
             return ""
 
@@ -622,16 +630,18 @@ def _generate_master_index(projects, output_dir):
 
 
 def _peek_first_jsonl_object(filepath: Path):
-    """Return the first JSON object from a JSONL file, or None."""
+    """Return the first JSON object (dict) from a JSONL file, or None."""
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                return json.loads(line)
+                obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(obj, dict):
+                return obj
     return None
 
 
@@ -694,12 +704,47 @@ def _looks_like_codex_rollout_jsonl(first_obj: dict) -> bool:
     )
 
 
+def _looks_like_omp_session_jsonl(first_obj: dict) -> bool:
+    if not isinstance(first_obj, dict):
+        return False
+    obj_type = first_obj.get("type")
+    return (obj_type == "title" and "pad" in first_obj) or (
+        obj_type == "session" and "cwd" in first_obj and "id" in first_obj
+    )
+
+
+def _read_omp_session_header(filepath: Path) -> dict | None:
+    """Return the first OMP session header object from a JSONL file."""
+    parsed_count = 0
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                parsed_count += 1
+                if obj.get("type") == "session":
+                    return obj
+                if parsed_count >= 5:
+                    return None
+    except OSError:
+        return None
+    return None
+
+
 def parse_session_file(filepath):
     """Parse a session file and return normalized data.
 
     Supports JSON and JSONL formats from:
     - Claude Code (local JSONL or exported JSON)
     - Codex CLI rollouts (JSONL)
+    - OMP session logs (JSONL)
 
     Returns a dict with 'loglines' key containing normalized entries.
     """
@@ -709,6 +754,8 @@ def parse_session_file(filepath):
         first = _peek_first_jsonl_object(filepath)
         if first and _looks_like_codex_rollout_jsonl(first):
             return _parse_codex_rollout_jsonl(filepath)
+        if first and _looks_like_omp_session_jsonl(first):
+            return _parse_omp_session_jsonl(filepath)
         return _parse_claude_jsonl_file(filepath)
 
     # Standard JSON format (Claude web JSON export)
@@ -925,6 +972,123 @@ def _parse_codex_rollout_jsonl(filepath: Path):
     return {"loglines": loglines, "meta": meta, "source_format": "codex_rollout"}
 
 
+def _omp_user_content_blocks(content) -> list[dict]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        return []
+
+    blocks: list[dict] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = block.get("text")
+            if text:
+                blocks.append({"type": "text", "text": text})
+    return blocks
+
+
+def _omp_assistant_content_blocks(content) -> list[dict]:
+    if not isinstance(content, list):
+        return []
+
+    blocks: list[dict] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text")
+            if text:
+                blocks.append({"type": "text", "text": text})
+        elif block_type == "thinking":
+            thinking = block.get("thinking")
+            if thinking:
+                blocks.append({"type": "thinking", "thinking": thinking})
+        elif block_type == "toolCall":
+            tool_name = block.get("name") or "Unknown tool"
+            call_id = block.get("id") or ""
+            arguments = block.get("arguments")
+            tool_input = arguments if isinstance(arguments, dict) else {"arguments": arguments}
+            blocks.append({"type": "tool_use", "name": tool_name, "input": tool_input, "id": call_id})
+    return blocks
+
+
+def _omp_tool_result_text(content) -> str:
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _parse_omp_session_jsonl(filepath: Path):
+    """Parse OMP session JSONL and convert to standard format."""
+    loglines = []
+    header = _read_omp_session_header(filepath) or {}
+    meta = {}
+    for target_key, source_key in (
+        ("session_id", "id"),
+        ("timestamp", "timestamp"),
+        ("cwd", "cwd"),
+        ("title", "title"),
+    ):
+        value = header.get(source_key)
+        if isinstance(value, str) and value.strip():
+            meta[target_key] = value.strip()
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "message":
+                continue
+
+            ts = entry.get("timestamp", "")
+            message_obj = entry.get("message")
+            if not isinstance(message_obj, dict):
+                continue
+            role = message_obj.get("role")
+
+            if role == "user":
+                blocks = _omp_user_content_blocks(message_obj.get("content"))
+                if blocks:
+                    message = {"role": "user", "content": blocks}
+                    loglines.append({"type": "user", "timestamp": ts, "message": message})
+                continue
+
+            if role == "assistant":
+                blocks = _omp_assistant_content_blocks(message_obj.get("content"))
+                if blocks:
+                    message = {"role": "assistant", "content": blocks}
+                    loglines.append({"type": "assistant", "timestamp": ts, "message": message})
+                continue
+
+            if role == "toolResult":
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": message_obj.get("toolCallId"),
+                    "content": _omp_tool_result_text(message_obj.get("content")),
+                    "is_error": bool(message_obj.get("isError")),
+                }
+                message = {"role": "assistant", "content": [block]}
+                loglines.append({"type": "assistant", "timestamp": ts, "message": message})
+                continue
+
+    return {"loglines": loglines, "meta": meta, "source_format": "omp_session"}
+
+
 def _parse_iso8601(value: str):
     if not value or not isinstance(value, str):
         return None
@@ -986,7 +1150,7 @@ _CHANGELOG_ENTRY_SCHEMA = {
         "schema_version": {"type": "integer", "const": CHANGELOG_ENTRY_SCHEMA_VERSION},
         "run_id": {"type": "string", "minLength": 1},
         "created_at": {"type": "string", "minLength": 1},
-        "tool": {"type": "string", "enum": ["codex", "claude", "unknown"]},
+        "tool": {"type": "string", "enum": ["codex", "claude", "omp", "unknown"]},
         "actor": {"type": "string", "minLength": 1},
         "project": {"type": "string", "minLength": 1},
         "project_root": {"type": "string", "minLength": 1},
@@ -1284,6 +1448,8 @@ def _native_session_id_for_source(*, tool: str, source_jsonl: Path | None) -> st
             _, _, _, session_id = _codex_rollout_session_times(source_path)
         elif normalized_tool == "claude":
             _, _, _, session_id = _claude_session_times(source_path)
+        elif normalized_tool == "omp":
+            _, _, _, session_id = _omp_session_times(source_path)
         else:
             return None
     except Exception:
@@ -4649,6 +4815,13 @@ def _user_codex_sessions_dir() -> Path:
     return codex_home / "sessions"
 
 
+def _user_omp_sessions_dir() -> Path:
+    override = os.environ.get("CTX_OMP_SESSIONS_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".omp" / "agent" / "sessions"
+
+
 def _candidate_codex_day_dirs(sessions_base: Path, start_dt: datetime, end_dt: datetime) -> list[Path]:
     candidate_dirs = set()
     for dt in (start_dt, end_dt):
@@ -4932,6 +5105,24 @@ def _claude_session_times(filepath: Path):
     return start_dt, end_dt, cwd, session_id
 
 
+def _omp_session_times(filepath: Path):
+    """Return (start_dt, end_dt, cwd, session_id) for an OMP JSONL session."""
+    header = _read_omp_session_header(filepath)
+    if not isinstance(header, dict):
+        return None, None, None, None
+
+    start_dt = _parse_iso8601(header.get("timestamp"))
+    cwd = header.get("cwd") if isinstance(header.get("cwd"), str) else None
+    session_id = header.get("id") if isinstance(header.get("id"), str) else None
+
+    last = _read_last_jsonl_object(filepath)
+    end_dt = _parse_iso8601(last.get("timestamp")) if isinstance(last, dict) else None
+    if start_dt and end_dt and start_dt > end_dt:
+        start_dt = end_dt
+
+    return start_dt, end_dt, cwd, session_id
+
+
 def _clamp_dt(value, fallback):
     return value if value is not None else fallback
 
@@ -5095,6 +5286,59 @@ def _build_native_session_candidate(
     }
 
 
+def _native_session_candidate_from_source(*, tool: str, source_jsonl: Path) -> dict:
+    """Build a sync candidate from one explicit native session log.
+
+    Raises ValueError with a human-readable reason when the file is rejected.
+    """
+    normalized_tool = (tool or "").strip().lower()
+    source_path = Path(source_jsonl).expanduser().resolve()
+
+    try:
+        first = _peek_first_jsonl_object(source_path)
+
+        if normalized_tool == "codex":
+            if not _looks_like_codex_rollout_jsonl(first):
+                raise ValueError("not a codex session log")
+            start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(source_path)
+        elif normalized_tool == "claude":
+            if _looks_like_codex_rollout_jsonl(first) or _looks_like_omp_session_jsonl(first):
+                raise ValueError("not a claude session log")
+            start_dt, end_dt, cwd, session_id = _claude_session_times(source_path)
+        elif normalized_tool == "omp":
+            header = _read_omp_session_header(source_path)
+            if header is None:
+                raise ValueError("not an OMP session log")
+            parent_stem = source_path.parent.name
+            if (source_path.parent.parent / f"{parent_stem}.jsonl").is_file():
+                raise ValueError(
+                    f"an OMP sidecar/subagent transcript nested under parent session '{parent_stem}'; "
+                    "only top-level sessions can be synced"
+                )
+            if header.get("parentSession"):
+                raise ValueError(
+                    "an OMP subagent session (parentSession is set in the session header); "
+                    "only top-level sessions can be synced"
+                )
+            start_dt, end_dt, cwd, session_id = _omp_session_times(source_path)
+        else:
+            raise ValueError(f"unsupported tool: {normalized_tool or tool}")
+    except (OSError, UnicodeDecodeError):
+        raise ValueError("not readable UTF-8 JSONL") from None
+
+    candidate = _build_native_session_candidate(
+        tool=normalized_tool,
+        source_jsonl=source_path,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        cwd=cwd,
+        session_id=session_id,
+    )
+    if candidate is None:
+        raise ValueError("no usable timestamps found in the session log")
+    return candidate
+
+
 def _candidate_codex_day_dirs_for_window(sessions_base: Path, since: datetime, until: datetime) -> list[Path]:
     start_local = since.astimezone().date() - timedelta(days=1)
     end_local = until.astimezone().date() + timedelta(days=1)
@@ -5207,12 +5451,45 @@ def _discover_native_claude_sessions(*, since: datetime, until: datetime) -> lis
     return candidates
 
 
+def _discover_native_omp_sessions(*, since: datetime, until: datetime) -> list[dict]:
+    since, until = _normalized_native_session_window(since=since, until=until)
+    base = _user_omp_sessions_dir()
+    if not base.exists():
+        return []
+
+    candidates: list[dict] = []
+    for path in sorted(base.glob("*/*.jsonl")):
+        header = _read_omp_session_header(path)
+        if header is None or header.get("parentSession"):
+            continue
+        resolved_path = path.resolve()
+        start_dt, end_dt, cwd, session_id = _omp_session_times(resolved_path)
+        if not _native_session_overlaps_window(start_dt=start_dt, end_dt=end_dt, since=since, until=until):
+            continue
+        candidate = _build_native_session_candidate(
+            tool="omp",
+            source_jsonl=resolved_path,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            cwd=cwd,
+            session_id=session_id,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return candidates
+
+
 def _discover_native_sessions(*, tools: tuple[str, ...], since: datetime, until: datetime) -> list[dict]:
     since, until = _normalized_native_session_window(since=since, until=until)
     requested_tools = []
     for tool in tools:
         normalized = (tool or "").strip().lower()
-        if normalized in {"codex", "claude"} and normalized not in requested_tools:
+        if normalized in {"codex", "claude", "omp"} and normalized not in requested_tools:
             requested_tools.append(normalized)
 
     candidates: list[dict] = []
@@ -5220,6 +5497,8 @@ def _discover_native_sessions(*, tools: tuple[str, ...], since: datetime, until:
         candidates.extend(_discover_native_codex_sessions(since=since, until=until))
     if "claude" in requested_tools:
         candidates.extend(_discover_native_claude_sessions(since=since, until=until))
+    if "omp" in requested_tools:
+        candidates.extend(_discover_native_omp_sessions(since=since, until=until))
 
     candidates.sort(
         key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),

@@ -167,9 +167,10 @@ ais resume codex --latest
 |------|--------------|--------------|
 | Codex CLI | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME/sessions/...`) | `--codex` |
 | Claude Code | `~/.claude/projects/<encoded-path>/*.jsonl` | `--claude` |
+| OMP | `~/.omp/agent/sessions/<encoded-project>/*.jsonl` (or `CTX_OMP_SESSIONS_DIR/*/*.jsonl` if set) | `--omp` |
 | Claude Web Export | Downloaded JSON from claude.ai | `ais json` only |
 
-> **Note:** Codex log discovery honors the `CODEX_HOME` environment variable if set.
+> **Note:** Codex log discovery honors the `CODEX_HOME` environment variable if set. OMP log discovery scans `~/.omp/agent/sessions/<encoded-project>/*.jsonl` by default; set `CTX_OMP_SESSIONS_DIR` to point at a different sessions directory.
 
 ---
 

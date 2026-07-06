@@ -18,6 +18,7 @@ The CLI can process logs from:
 
 - **Codex CLI** — `~/.codex/sessions/**/rollout-*.jsonl` (or `$CODEX_HOME/sessions/...` if `CODEX_HOME` is set)
 - **Claude Code** — `~/.claude/projects/**/<uuid>.jsonl`
+- **OMP** — `~/.omp/agent/sessions/<encoded-project>/*.jsonl` (or `CTX_OMP_SESSIONS_DIR/*/*.jsonl` if set)
 - **Claude Web Export** — JSON files exported from claude.ai
 
 ---
@@ -467,7 +468,7 @@ ais changelog backfill --limit 5 --max-concurrency 1
 
 ### `ais changelog sync`
 
-Sync recent native Codex and Claude sessions into per-repo changelog entries.
+Sync recent native Codex, Claude, and OMP sessions into per-repo changelog entries.
 
 This is the primary changelog workflow. By default it scans the last 48 hours, including long-running native sessions that started earlier but overlap the scan window. It writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
 
@@ -476,9 +477,11 @@ Evaluator and model selection follow the same precedence as the managed `ctx` wo
 **Usage:**
 
 ```bash
-ais changelog sync --codex
+ais changelog sync
+ais changelog sync --omp
 ais changelog sync --all --since "7 days ago"
 ais changelog sync --claude --dry-run
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
 ```
 
 **Options:**
@@ -487,8 +490,10 @@ ais changelog sync --claude --dry-run
 |--------|-------------|
 | `--codex` | Sync native Codex sessions only |
 | `--claude` | Sync native Claude sessions only |
-| `--all` | Sync both tools (default) |
+| `--omp` | Sync native OMP sessions only |
+| `--all` | Sync all supported tools (default) |
 | `--since TEXT` | Start of the scan window (defaults to 48 hours before `--until`/now) |
+| `--source-jsonl PATH` | Sync exactly one native JSONL file; requires exactly one of `--codex`, `--claude`, or `--omp` |
 | `--until TEXT` | End of the scan window (defaults to now) |
 | `--limit INTEGER` | Maximum number of discovered sessions to consider (when `--project-root` is set, the limit applies after repo filtering) |
 | `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
@@ -502,14 +507,20 @@ Codex sync uses the rollout `cwd` first. If that is broad or outside a repo, Cod
 **Examples:**
 
 ```bash
-# Default recent-session sync
-ais changelog sync --codex
+# Default recent-session sync for Codex, Claude, and OMP
+ais changelog sync
 
-# Scan a larger window
+# Scan OMP sessions only
+ais changelog sync --omp
+
+# Scan a larger window across all tools
 ais changelog sync --all --since "7 days ago"
 
 # Limit writes to the current repo
 ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)"
+
+# Sync one explicit OMP JSONL file
+ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
 
 # Preview before writing
 ais changelog sync --all --dry-run
@@ -540,7 +551,7 @@ ais changelog since <ref>
 | `--format FORMAT` | Output format: `summary` (default), `json`, `bullets`, `table` |
 | `--project-root PATH` | Git repo root (defaults to current repo) |
 | `--actor TEXT` | Filter by actor |
-| `--tool TEXT` | Filter by tool (`codex` or `claude`) |
+| `--tool TEXT` | Filter by tool (`codex`, `claude`, or `omp`) |
 | `--tag TEXT` | Filter by tag (repeatable) |
 
 **Examples:**

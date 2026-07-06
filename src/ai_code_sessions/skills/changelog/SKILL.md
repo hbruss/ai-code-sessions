@@ -60,7 +60,7 @@ Each line in `entries.jsonl` is a JSON object:
 | `schema_version` | int | Always `1` for current format |
 | `run_id` | string | Content-addressed hash (16 chars), unique per session |
 | `created_at` | string | ISO 8601 timestamp when entry was generated |
-| `tool` | string | `"codex"`, `"claude"`, or `"unknown"` |
+| `tool` | string | `"codex"`, `"claude"`, `"omp"`, or `"unknown"` |
 | `actor` | string | Who ran the session |
 | `project` | string | Project/repo name |
 | `label` | string\|null | Human-friendly session label |
@@ -232,6 +232,7 @@ ais changelog since yesterday --format bullets   # Markdown with bullets
 
 # Filtering
 ais changelog since yesterday --tool codex       # Only Codex sessions
+ais changelog since yesterday --tool omp         # Only OMP sessions
 ais changelog since yesterday --tag feat         # Only feature work
 ```
 
@@ -312,7 +313,7 @@ rg '"result":\s*"fail"' .changelog/*/entries.jsonl
 
 ## Transcripts
 
-Each entry's `transcript` field contains paths to the full HTML transcript. Transcripts live in `.codex/sessions/` or `.claude/sessions/` depending on which tool ran the session.
+Each entry's `transcript` field contains paths to the full transcript artifacts and source log. Native source logs live in `~/.codex/sessions/...`, `~/.claude/projects/<encoded-path>/*.jsonl`, or `~/.omp/agent/sessions/<encoded-project>/*.jsonl` depending on which tool ran the session.
 
 ### Get Transcript Path
 

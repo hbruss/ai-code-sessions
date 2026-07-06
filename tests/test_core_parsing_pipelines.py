@@ -121,6 +121,189 @@ def test_parse_codex_rollout_jsonl(tmp_path):
     assert loglines[3]["message"]["content"][0]["type"] == "thinking"
 
 
+def test_parse_omp_session_jsonl_normalizes_messages_and_skips_metadata(tmp_path):
+    path = tmp_path / "omp-session.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "title",
+                        "v": 1,
+                        "title": "Synthetic OMP session",
+                        "source": "auto",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "pad": "",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "session",
+                        "version": 3,
+                        "id": "omp-session-1",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "cwd": "/project",
+                        "title": "Synthetic OMP session",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "user-1",
+                        "parentId": None,
+                        "timestamp": "2026-01-01T00:00:01Z",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Prompt for omp-session-1"},
+                                {"type": "image", "data": "synthetic-base64", "mimeType": "image/png"},
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "assistant-1",
+                        "parentId": "user-1",
+                        "timestamp": "2026-01-01T00:00:02Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "Assistant response"},
+                                {"type": "thinking", "thinking": "Private reasoning summary"},
+                                {
+                                    "type": "toolCall",
+                                    "id": "call-1",
+                                    "name": "Bash",
+                                    "arguments": {"command": "pwd"},
+                                },
+                                {"type": "redactedThinking", "data": "redacted"},
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "tool-result-1",
+                        "parentId": "assistant-1",
+                        "timestamp": "2026-01-01T00:00:03Z",
+                        "message": {
+                            "role": "toolResult",
+                            "toolCallId": "call-1",
+                            "toolName": "Bash",
+                            "content": [
+                                {"type": "text", "text": "first line"},
+                                {"type": "text", "text": "second line"},
+                                {"type": "image", "data": "synthetic-base64", "mimeType": "image/png"},
+                            ],
+                            "isError": False,
+                        },
+                    }
+                ),
+                json.dumps({"type": "model_change", "id": "model-1", "timestamp": "2026-01-01T00:00:04Z"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = core.parse_session_file(path)
+
+    assert result["source_format"] == "omp_session"
+    assert result["meta"] == {
+        "session_id": "omp-session-1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": "/project",
+        "title": "Synthetic OMP session",
+    }
+    loglines = result["loglines"]
+    assert len(loglines) == 3
+    assert loglines[0] == {
+        "type": "user",
+        "timestamp": "2026-01-01T00:00:01Z",
+        "message": {"role": "user", "content": [{"type": "text", "text": "Prompt for omp-session-1"}]},
+    }
+    assistant_blocks = loglines[1]["message"]["content"]
+    assert assistant_blocks == [
+        {"type": "text", "text": "Assistant response"},
+        {"type": "thinking", "thinking": "Private reasoning summary"},
+        {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}, "id": "call-1"},
+    ]
+    assert loglines[2] == {
+        "type": "assistant",
+        "timestamp": "2026-01-01T00:00:03Z",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "content": "first line\nsecond line",
+                    "is_error": False,
+                }
+            ],
+        },
+    }
+
+
+def test_parse_session_file_skips_non_dict_leading_lines_for_omp(tmp_path):
+    path = tmp_path / "omp-null-lead.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                "null",
+                json.dumps(
+                    {
+                        "type": "title",
+                        "v": 1,
+                        "title": "Synthetic OMP session",
+                        "source": "auto",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "pad": "",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "session",
+                        "version": 3,
+                        "id": "omp-null-lead",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "cwd": "/project",
+                        "title": "Synthetic OMP session",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "id": "user-1",
+                        "parentId": None,
+                        "timestamp": "2026-01-01T00:00:01Z",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "Prompt for omp-null-lead"}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = core.parse_session_file(path)
+
+    assert result["source_format"] == "omp_session"
+    assert result["loglines"] == [
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "Prompt for omp-null-lead"}]},
+        }
+    ]
+
+
 def test_build_changelog_digest_tracks_apply_patch_custom_tool_call_input(tmp_path):
     path = tmp_path / "rollout.jsonl"
     path.write_text(
