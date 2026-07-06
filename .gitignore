@@ -26,6 +26,7 @@ venv/
 htmlcov/
 
 # Codex sessions and local scratch
+WATCHDOG.yml
 .codex/sessions/*
 .codex/skills/*
 .claude/sessions/*
