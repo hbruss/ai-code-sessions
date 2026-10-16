@@ -681,3 +681,77 @@ def test_concurrent_hermes_exports_publish_only_complete_evidence(tmp_path, monk
     assert first_path == second
     assert first_path.read_bytes() == raw
     assert list(first_path.parent.iterdir()) == [first_path]
+
+
+def test_hermes_message_rewrites_keep_the_latest_uid_version(tmp_path):
+    source, _ = _write_hermes_export(
+        tmp_path / "rewritten.jsonl",
+        [
+            _hermes_session(
+                "rewritten",
+                messages=[
+                    _hermes_message("prompt", "user", "Obsolete request.", 1767225601),
+                    _hermes_message("answer", "assistant", "Stale accomplishment.", 1767225602),
+                    _hermes_message("prompt", "user", "Corrected request.", 1767225603),
+                    _hermes_message("answer", "assistant", "Final accomplishment.", 1767225604),
+                ],
+            )
+        ],
+    )
+
+    parsed = core.parse_session_file(source)
+    assert [core.extract_text_from_content(line["message"]["content"]) for line in parsed["loglines"]] == [
+        "Corrected request.",
+        "Final accomplishment.",
+    ]
+
+
+def test_hermes_occurrence_uids_pair_reused_provider_ids_with_correct_results(tmp_path):
+    calls = [
+        {"id": "reused-id", "function": {"name": "terminal", "arguments": json.dumps({"command": command})}}
+        for command in ("pytest first_suite.py", "pytest second_suite.py")
+    ]
+    source, _ = _write_hermes_export(
+        tmp_path / "occurrences.jsonl",
+        [
+            _hermes_session(
+                "occurrences",
+                messages=[
+                    _hermes_message(
+                        "calls",
+                        "assistant",
+                        "",
+                        1767225601,
+                        tool_calls=calls,
+                        tool_call_uids=json.dumps({"reused-id": ["first-occurrence", "second-occurrence"]}),
+                    ),
+                    _hermes_message(
+                        "first-result",
+                        "tool",
+                        '{"output":"First suite failed","exit_code":1}',
+                        1767225602,
+                        tool_call_id="reused-id",
+                        tool_call_uid="first-occurrence",
+                    ),
+                    _hermes_message(
+                        "second-result",
+                        "tool",
+                        '{"output":"Second suite succeeded","exit_code":0}',
+                        1767225603,
+                        tool_call_id="reused-id",
+                        tool_call_uid="second-occurrence",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    digest = core._build_changelog_digest(
+        source_jsonl=source,
+        start="2026-01-01T00:00:00+00:00",
+        end="2026-01-01T00:00:10+00:00",
+    )
+    assert [(call["cmd"], (call.get("result") or {}).get("is_error")) for call in digest["delta"]["tool_calls"]] == [
+        ("pytest first_suite.py", True),
+        ("pytest second_suite.py", False),
+    ]

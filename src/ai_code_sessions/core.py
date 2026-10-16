@@ -778,9 +778,12 @@ def _hermes_tool_result(message: dict) -> dict:
     if stderr:
         output = f"{_hermes_text(output)}\n{_hermes_text(stderr)}".strip()
     failed_exit = isinstance(exit_code, (int, float)) and not isinstance(exit_code, bool) and exit_code != 0
+    tool_uid = message.get("tool_call_uid")
+    if not isinstance(tool_uid, str) or not tool_uid:
+        tool_uid = message.get("tool_call_id") or message.get("toolCallId")
     return {
         "type": "tool_result",
-        "tool_use_id": message.get("tool_call_id") or message.get("toolCallId"),
+        "tool_use_id": tool_uid,
         "content": _hermes_text(output),
         "is_error": bool(message.get("is_error") or message.get("isError") or error or failed_exit),
     }
@@ -812,13 +815,22 @@ def _parse_hermes_session_jsonl(filepath: Path) -> dict:
         }
     )
     loglines = []
-    seen_uids = set()
     if (
         sessions[0].get("hidden")
         or sessions[0].get("source") == "tool"
         or _hermes_model_config(sessions[0]).get("_delegate_from")
     ):
         return {"loglines": loglines, "meta": meta, "source_format": "hermes_jsonl"}
+
+    latest_by_uid = {}
+    for session in sessions:
+        if session.get("hidden"):
+            continue
+        for row in session["messages"]:
+            if isinstance(row, dict):
+                message_uid = row.get("message_uid")
+                if isinstance(message_uid, str) and message_uid:
+                    latest_by_uid[message_uid] = row
 
     for session in sessions:
         if session.get("hidden"):
@@ -835,10 +847,8 @@ def _parse_hermes_session_jsonl(filepath: Path) -> dict:
             if not row.get("active") and not compacted:
                 continue
             message_uid = row.get("message_uid")
-            if isinstance(message_uid, str) and message_uid:
-                if message_uid in seen_uids:
-                    continue
-                seen_uids.add(message_uid)
+            if isinstance(message_uid, str) and message_uid and latest_by_uid[message_uid] is not row:
+                continue
             timestamp = _hermes_timestamp(row.get("timestamp"))
 
             if role == "tool":
@@ -853,9 +863,20 @@ def _parse_hermes_session_jsonl(filepath: Path) -> dict:
                     blocks.extend(block for block in content if isinstance(block, dict))
                 if role == "assistant":
                     tool_calls = row.get("tool_calls")
+                    tool_uids = _safe_json_loads(row.get("tool_call_uids"))
+                    tool_uids = tool_uids if isinstance(tool_uids, dict) else {}
+                    occurrences = {}
                     for call in tool_calls if isinstance(tool_calls, list) else []:
                         if not isinstance(call, dict):
                             continue
+                        call_id = call.get("id") or call.get("call_id") or ""
+                        tool_uid = tool_uids.get(call_id) if isinstance(call_id, str) else None
+                        if isinstance(tool_uid, list):
+                            occurrence = occurrences.get(call_id, 0)
+                            occurrences[call_id] = occurrence + 1
+                            tool_uid = tool_uid[occurrence] if occurrence < len(tool_uid) else None
+                        if not isinstance(tool_uid, str) or not tool_uid:
+                            tool_uid = call_id
                         function = call.get("function") if isinstance(call.get("function"), dict) else {}
                         arguments = _safe_json_loads(function.get("arguments"))
                         if not isinstance(arguments, dict):
@@ -865,7 +886,7 @@ def _parse_hermes_session_jsonl(filepath: Path) -> dict:
                                 "type": "tool_use",
                                 "name": function.get("name") or call.get("name") or "Unknown tool",
                                 "input": arguments,
-                                "id": call.get("id") or call.get("call_id") or "",
+                                "id": tool_uid,
                             }
                         )
                 if not blocks:

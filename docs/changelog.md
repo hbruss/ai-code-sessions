@@ -170,7 +170,9 @@ Branches/resets remain separate conversations; delegated sessions are excluded.
 Missing or ambiguous ancestry is an error rather than a guessed identity.
 
 Active and compaction-archived messages contribute evidence; undone/inactive
-messages remain in the raw export but not the summary digest. Native export
+messages remain in the raw export but not the summary digest. Repeated message
+UIDs use the latest exported version; native tool-occurrence UIDs keep results
+paired with their calls even when provider-facing call IDs repeat. Native export
 snapshots and self-contained logical-session artifacts are retained privately
 under `hermes-exports/` beside the application's global config. Set
 `CTX_HERMES_EXPORTS_DIR` to use another location. Even `--dry-run` may materialize
