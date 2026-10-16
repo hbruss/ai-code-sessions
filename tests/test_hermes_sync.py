@@ -612,3 +612,39 @@ def test_hermes_discovery_skips_unidentified_profiles_but_explicit_imports_rejec
     ]
     with pytest.raises(ValueError):
         core._hermes_candidates_from_export(source, profile="research")
+
+
+def test_hermes_discovery_selects_complete_lineages_before_fetching_ancestors(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    epoch = 1767225600
+    sessions = [
+        _hermes_session("past", started_at=epoch - 20, ended_at=epoch - 15, end_reason="compression"),
+        _hermes_session("middle", parent="bridge", started_at=epoch + 1, ended_at=epoch + 2, end_reason="compression"),
+        _hermes_session("future", parent="middle", started_at=epoch + 30, ended_at=epoch + 40),
+        _hermes_session("expired", parent="unidentified", started_at=epoch - 100, ended_at=epoch - 50),
+    ]
+    _, raw = _write_hermes_export(tmp_path / "history.jsonl", sessions)
+    parents = [
+        sessions[0],
+        _hermes_session("bridge", parent="past", started_at=epoch - 14, ended_at=epoch - 2, end_reason="compression"),
+        _hermes_session("unidentified", profile=None),
+    ]
+    by_id_output = {parent["id"]: (json.dumps(parent) + "\n").encode("utf-8") for parent in parents}
+    body = f"""
+import sys
+by_id = {by_id_output!r}
+sys.stdout.buffer.write(by_id[sys.argv[sys.argv.index("--session-id") + 1]] if "--session-id" in sys.argv else {raw!r})
+"""
+    executable = _fake_hermes(tmp_path, body)
+    monkeypatch.setenv("CTX_HERMES_CMD", str(executable))
+
+    [candidate] = core._discover_native_sessions(
+        tools=("hermes",),
+        since=datetime.fromtimestamp(epoch, timezone.utc),
+        until=datetime.fromtimestamp(epoch + 10, timezone.utc),
+        hermes_profile="research",
+    )
+    assert candidate["session_id"] == "past"
+    assert candidate["physical_session_ids"] == ["past", "bridge", "middle", "future"]
+    assert candidate["start"] == datetime.fromtimestamp(epoch - 20, timezone.utc).isoformat()
+    assert candidate["end"] == datetime.fromtimestamp(epoch + 40, timezone.utc).isoformat()

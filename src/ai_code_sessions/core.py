@@ -6201,6 +6201,31 @@ def _discover_native_hermes_sessions(*, since: datetime, until: datetime, profil
         return []
 
     by_id = {record["id"]: record for record in records}
+    # Select potentially overlapping families before fetching missing ancestry.
+    # Keep all known relatives so a window cannot truncate a compression chain.
+    children: dict[str, list[str]] = {}
+    pending = []
+    for record in records:
+        parent_id = _hermes_parent_id(record)
+        if parent_id is not None:
+            children.setdefault(parent_id, []).append(record["id"])
+        _, end_dt = _hermes_session_window([record])
+        if end_dt is None or end_dt >= since:
+            pending.append(record["id"])
+    selected = set()
+    while pending:
+        session_id = pending.pop()
+        if session_id in selected:
+            continue
+        selected.add(session_id)
+        record = by_id.get(session_id)
+        parent_id = _hermes_parent_id(record) if record is not None else None
+        if parent_id is not None:
+            pending.append(parent_id)
+        pending.extend(children.get(session_id, ()))
+    records = [record for record in records if record["id"] in selected]
+    by_id = {record["id"]: record for record in records}
+
     index = 0
     while index < len(records):
         record = records[index]
