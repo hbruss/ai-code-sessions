@@ -5483,17 +5483,17 @@ def _hermes_run_export(*, profile: str, session_id: str | None = None) -> bytes:
         command.extend(("--session-id", session_id))
     command.append("-")
     try:
-        result = subprocess.run(command, capture_output=True, check=False, text=True, encoding="utf-8")
+        result = subprocess.run(command, capture_output=True, check=False)
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
         raise ValueError(f"Could not run Hermes native export using {executable!r}: {error}") from None
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = (result.stderr or result.stdout or b"").decode("utf-8", errors="replace").strip()
         suffix = f": {detail}" if detail else ""
         raise ValueError(f"Hermes native export failed with exit status {result.returncode}{suffix}")
-    return (result.stdout or "").encode("utf-8")
+    return result.stdout or b""
 
 
-def _hermes_records_from_bytes(raw: bytes) -> list[dict]:
+def _hermes_records_from_bytes(raw: bytes, *, skip_unidentified_profiles: bool = False) -> list[dict]:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -5506,20 +5506,22 @@ def _hermes_records_from_bytes(raw: bytes) -> list[dict]:
             record = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"Malformed Hermes JSONL on line {line_number}: {error.msg}") from None
-        if not _looks_like_hermes_session_jsonl(record):
+        if not isinstance(record, dict) or not isinstance(record.get("messages"), list):
             raise ValueError(f"Hermes export line {line_number} is not a native session object")
         session_id = record.get("id")
         profile_name = record.get("profile_name")
         source = record.get("source")
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError(f"Hermes export line {line_number} is missing a usable session id")
-        if not isinstance(profile_name, str) or not profile_name.strip():
-            raise ValueError(f"Hermes export line {line_number} is missing a runtime profile name")
         if not isinstance(source, str) or not source.strip():
             raise ValueError(f"Hermes export line {line_number} is missing a session source")
         parent_id = record.get("parent_session_id")
         if parent_id is not None and (not isinstance(parent_id, str) or not parent_id.strip()):
             raise ValueError(f"Hermes session {session_id!r} has an unparseable parent id")
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            if skip_unidentified_profiles and (profile_name is None or isinstance(profile_name, str)):
+                continue
+            raise ValueError(f"Hermes export line {line_number} is missing a runtime profile name")
         records.append(record)
     return records
 
@@ -6193,7 +6195,7 @@ def _discover_native_hermes_sessions(*, since: datetime, until: datetime, profil
     # Hermes bulk time filters exclude active sessions; apply the window locally.
     raw = _hermes_run_export(profile=profile)
     raw_paths = [_store_hermes_evidence(raw=raw, subdirectory="raw")]
-    exported = _hermes_records_from_bytes(raw)
+    exported = _hermes_records_from_bytes(raw, skip_unidentified_profiles=True)
     records = [record for record in exported if record["profile_name"] == profile]
     if not records:
         return []
@@ -6334,14 +6336,17 @@ def _project_hint_to_git_toplevel(hint: dict) -> str | None:
     return _git_toplevel_from_path_hint(value)
 
 
-def _hermes_native_repo_root(value: object) -> str | None:
+def _hermes_native_repo_root(value: object, *, exact: bool = False) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     path = Path(value).expanduser()
     if not path.is_dir():
         return None
-    root = _git_toplevel(path.resolve())
-    return str(root.resolve()) if root is not None else None
+    path = path.resolve()
+    root = _git_toplevel(path)
+    if root is None or (exact and root.resolve() != path):
+        return None
+    return str(root.resolve())
 
 
 def _resolve_hermes_session_project(candidate: dict) -> dict:
@@ -6360,7 +6365,8 @@ def _resolve_hermes_session_project(candidate: dict) -> dict:
         and all(item.get("cwd") is None and item.get("git_repo_root") is None for item in project_evidence)
     )
     cwd_root = _hermes_native_repo_root(raw_cwd)
-    git_repo_root = _hermes_native_repo_root(raw_git_repo_root)
+    git_repo_root = _hermes_native_repo_root(raw_git_repo_root, exact=True)
+    unresolved_recorded_root = raw_git_repo_root is not None and git_repo_root is None
     native_roots = []
     for root in (cwd_root, git_repo_root):
         if root is not None and root not in native_roots:
@@ -6370,11 +6376,15 @@ def _resolve_hermes_session_project(candidate: dict) -> dict:
             continue
         for key in ("cwd", "git_repo_root"):
             value = item.get(key)
-            root = _hermes_native_repo_root(value)
+            root = _hermes_native_repo_root(value, exact=key == "git_repo_root")
+            if key == "git_repo_root" and value is not None and root is None:
+                unresolved_recorded_root = True
             if root is not None and root not in native_roots:
                 native_roots.append(root)
 
     conflicts = []
+    if unresolved_recorded_root:
+        conflicts.append("Recorded Hermes git_repo_root is not an available Git toplevel")
     if len(native_roots) > 1:
         conflicts.append("Hermes cwd and git_repo_root metadata resolve to different Git toplevels")
     plausible_project_roots = list(native_roots)

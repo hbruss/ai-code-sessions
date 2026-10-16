@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 import ai_code_sessions as package
@@ -646,12 +647,15 @@ def test_project_filter_cannot_clear_conflicting_hermes_binding(tmp_path, monkey
     assert calls == []
 
 
-def test_deleted_native_repo_is_not_reassigned_to_enclosing_repo(tmp_path, monkeypatch):
+@pytest.mark.parametrize("directory_exists", [False, True], ids=["missing-directory", "missing-git-metadata"])
+def test_deleted_native_repo_is_not_reassigned_to_enclosing_repo(tmp_path, monkeypatch, directory_exists):
     _isolate_hermes_exports(monkeypatch, tmp_path)
     enclosing_repo = tmp_path / "enclosing"
     enclosing_repo.mkdir()
     subprocess.run(["git", "init", "--quiet", str(enclosing_repo)], check=True)
     missing_repo = enclosing_repo / "removed-nested-repo"
+    if directory_exists:
+        missing_repo.mkdir()
     source = _write_export(
         tmp_path / "deleted-repo.jsonl",
         _session("deleted-repo-session", cwd=str(missing_repo), git_repo_root=str(missing_repo)),

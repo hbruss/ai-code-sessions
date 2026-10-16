@@ -575,3 +575,40 @@ def test_hermes_rejects_ambiguous_compression_forks(tmp_path, monkeypatch, logic
     else:
         with pytest.raises(ValueError, match="ambiguous compression"):
             core._hermes_candidates_from_export(source)
+
+
+def test_hermes_native_export_preserves_crlf_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    raw = (json.dumps(_hermes_session("crlf-session")) + "\r\n").encode("utf-8")
+    executable = _fake_hermes(tmp_path, f"import sys\nsys.stdout.buffer.write({raw!r})\n")
+    monkeypatch.setenv("CTX_HERMES_CMD", str(executable))
+
+    [candidate] = core._discover_native_sessions(
+        tools=("hermes",),
+        since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        hermes_profile="research",
+    )
+    assert Path(candidate["raw_export_paths"][0]).read_bytes() == raw
+
+
+def test_hermes_discovery_skips_unidentified_profiles_but_explicit_imports_reject_them(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    source, raw = _write_hermes_export(
+        tmp_path / "mixed.jsonl",
+        [_hermes_session("unidentified", profile=None), _hermes_session("identified")],
+    )
+    executable = _fake_hermes(tmp_path, f"import sys\nsys.stdout.buffer.write({raw!r})\n")
+    monkeypatch.setenv("CTX_HERMES_CMD", str(executable))
+
+    candidates = core._discover_native_sessions(
+        tools=("hermes",),
+        since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        hermes_profile="research",
+    )
+    assert [(candidate["profile_name"], candidate["session_id"]) for candidate in candidates] == [
+        ("research", "identified")
+    ]
+    with pytest.raises(ValueError):
+        core._hermes_candidates_from_export(source, profile="research")

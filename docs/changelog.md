@@ -146,13 +146,17 @@ source/profile mismatches are errors.
 Discovery exports the selected profile without Hermes's bulk time filters,
 which exclude active sessions, then applies `--since`/`--until` locally. The
 retained raw export can therefore include sessions outside the sync window.
+Discovery skips session records without a runtime profile rather than assigning
+one. Explicit imports and required ancestors still reject missing profiles.
 
 Hermes can export null `cwd` and `git_repo_root`. Without trustworthy repo
 metadata, the session stays unresolved unless `--hermes-project-root` supplies
 an explicit binding for the selected profile. The binding requires an explicit
 `--hermes-profile` and a real Git repo; it applies only when both native project
 fields are absent. Foreign, deleted, or conflicting recorded paths are not
-silently reassigned. `--project-root` remains a write filter, not a binding.
+silently reassigned. A recorded `git_repo_root` must still be that exact Git
+toplevel, even if its directory survives after its Git metadata is removed.
+`--project-root` remains a write filter, not a binding.
 Actor selection keeps the normal `--actor`/config rules; a Discord user ID or
 profile name is not guessed to be the actor.
 
