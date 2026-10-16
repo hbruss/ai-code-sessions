@@ -5475,14 +5475,12 @@ def _store_hermes_evidence(*, raw: bytes, subdirectory: str) -> Path:
     return destination.resolve()
 
 
-def _hermes_run_export(*, profile: str, since: datetime | None = None, session_id: str | None = None) -> bytes:
+def _hermes_run_export(*, profile: str, session_id: str | None = None) -> bytes:
     executable = os.environ.get("CTX_HERMES_CMD", "").strip() or "hermes"
     command = [str(Path(executable).expanduser()), "--profile", profile, "sessions", "export"]
     command.extend(("--format", "jsonl", "--redact", "--yes"))
     if session_id is not None:
         command.extend(("--session-id", session_id))
-    elif since is not None:
-        command.extend(("--newer-than", since.astimezone(timezone.utc).isoformat()))
     command.append("-")
     try:
         result = subprocess.run(command, capture_output=True, check=False, text=True, encoding="utf-8")
@@ -5501,7 +5499,7 @@ def _hermes_records_from_bytes(raw: bytes) -> list[dict]:
     except UnicodeDecodeError as error:
         raise ValueError(f"Hermes export is not valid UTF-8: {error}") from None
     records = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    for line_number, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
             continue
         try:
@@ -5644,7 +5642,13 @@ def _hermes_group_records(records: list[dict]) -> list[tuple[dict, list[dict]]]:
     for (profile_name, root_id), members in groups.items():
         members.sort(key=lambda item: (item[0], item[1]))
         root = sessions[(profile_name, root_id)]
-        result.append((root, [record for _, _, record in members]))
+        chain = [record for _, _, record in members]
+        parent = root
+        for child in chain[1:]:
+            if _hermes_parent_id(child) != parent["id"]:
+                raise ValueError(f"Hermes session {root_id!r} has ambiguous compression ancestry")
+            parent = child
+        result.append((root, chain))
     return result
 
 
@@ -5718,13 +5722,13 @@ def _hermes_logical_identity_from_source(source_jsonl: Path) -> tuple[str, str]:
     actual_ids = [record["id"] for record in records]
     if expected_ids != actual_ids:
         raise ValueError("Hermes logical artifact physical-session provenance does not match its records")
-    prior: dict[str, dict] = {root_id: root}
+    parent = root
     for record in records[1:]:
-        parent_id = _hermes_parent_id(record)
-        parent = prior.get(parent_id) if parent_id else None
-        if parent is None or not _hermes_is_compression_child(record, parent):
+        if _hermes_parent_id(record) != parent["id"]:
+            raise ValueError(f"Hermes logical artifact has ambiguous compression ancestry at {record['id']!r}")
+        if not _hermes_is_compression_child(record, parent):
             raise ValueError(f"Hermes logical artifact has an invalid continuation at {record['id']!r}")
-        prior[record["id"]] = record
+        parent = record
     return profile_name, root_id
 
 
@@ -6186,7 +6190,8 @@ def _discover_native_omp_sessions(*, since: datetime, until: datetime) -> list[d
 
 
 def _discover_native_hermes_sessions(*, since: datetime, until: datetime, profile: str) -> list[dict]:
-    raw = _hermes_run_export(profile=profile, since=since)
+    # Hermes bulk time filters exclude active sessions; apply the window locally.
+    raw = _hermes_run_export(profile=profile)
     raw_paths = [_store_hermes_evidence(raw=raw, subdirectory="raw")]
     exported = _hermes_records_from_bytes(raw)
     records = [record for record in exported if record["profile_name"] == profile]

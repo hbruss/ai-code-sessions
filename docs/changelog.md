@@ -143,6 +143,10 @@ ais changelog sync --all --hermes --hermes-profile research --dry-run
 not `transport_profile`. Discovery targets `default` if it is omitted. Explicit
 source/profile mismatches are errors.
 
+Discovery exports the selected profile without Hermes's bulk time filters,
+which exclude active sessions, then applies `--since`/`--until` locally. The
+retained raw export can therefore include sessions outside the sync window.
+
 Hermes can export null `cwd` and `git_repo_root`. Without trustworthy repo
 metadata, the session stays unresolved unless `--hermes-project-root` supplies
 an explicit binding for the selected profile. The binding requires an explicit

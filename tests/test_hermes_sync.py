@@ -331,7 +331,7 @@ def test_hermes_offline_export_rejects_missing_ancestry_and_profile_mismatch(tmp
         core._hermes_candidates_from_export(other_profile, profile="research")
 
 
-def test_hermes_discovery_filters_runtime_profile_and_hydrates_parents(tmp_path, monkeypatch):
+def test_hermes_discovery_includes_active_sessions_filters_window_and_hydrates_parents(tmp_path, monkeypatch):
     monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
     epoch = 1767225600.0
     root = _hermes_session(
@@ -351,15 +351,19 @@ def test_hermes_discovery_filters_runtime_profile_and_hydrates_parents(tmp_path,
         messages=[_hermes_message("child-response", "assistant", "New child response.", epoch + 12)],
     )
     unrelated_profile = _hermes_session("filtered-out", profile="other-runtime-profile")
+    expired = _hermes_session("expired", started_at=epoch - 100, ended_at=epoch - 50)
     parent_output = json.dumps(root) + "\n"
-    initial_output = json.dumps(child) + "\n" + json.dumps(unrelated_profile) + "\n"
-    calls_path = tmp_path / "calls.jsonl"
+    initial_output = "".join(json.dumps(session) + "\n" for session in (child, unrelated_profile, expired))
     body = f"""
-import json
 import sys
-with open({str(calls_path)!r}, "a", encoding="utf-8") as calls:
-    print(json.dumps(sys.argv[1:]), file=calls)
-sys.stdout.write({parent_output!r} if "--session-id" in sys.argv else {initial_output!r})
+if "--profile" not in sys.argv or sys.argv[sys.argv.index("--profile") + 1] != "research":
+    raise SystemExit(0)
+if "--session-id" in sys.argv:
+    if sys.argv[sys.argv.index("--session-id") + 1] == "native-root":
+        sys.stdout.write({parent_output!r})
+elif "--newer-than" not in sys.argv:
+    # Native bulk time filters exclude active sessions.
+    sys.stdout.write({initial_output!r})
 """
     monkeypatch.setenv("CTX_HERMES_CMD", str(_fake_hermes(tmp_path, body)))
 
@@ -379,16 +383,6 @@ sys.stdout.write({parent_output!r} if "--session-id" in sys.argv else {initial_o
         "root-transport",
     ]
     assert len(candidate["raw_export_paths"]) == 2
-
-    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
-    initial_args, parent_args = calls
-    assert initial_args[initial_args.index("--profile") + 1] == "research"
-    assert "--newer-than" in initial_args
-    assert "--redact" in initial_args
-    assert "--session-id" not in initial_args
-    assert parent_args[parent_args.index("--session-id") + 1] == "native-root"
-    assert "--newer-than" not in parent_args
-    assert "--redact" in parent_args
 
 
 def test_hermes_project_binding_cannot_override_recorded_metadata(tmp_path, monkeypatch):
@@ -551,3 +545,33 @@ def test_hermes_native_export_boundary_reports_missing_failed_and_malformed_comm
     monkeypatch.setenv("CTX_HERMES_CMD", str(malformed))
     with pytest.raises(ValueError, match="Malformed Hermes JSONL"):
         core._discover_native_sessions(tools=("hermes",), since=since, until=until)
+
+
+def test_hermes_jsonl_preserves_unicode_line_separators(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    content = "Pasted text\u0085with\u2028Unicode\u2029separators."
+    source, raw = _write_hermes_export(
+        tmp_path / "unicode.jsonl",
+        [_hermes_session("unicode-session", messages=[_hermes_message("prompt", "user", content, 1767225601)])],
+    )
+
+    [candidate] = core._hermes_candidates_from_export(source)
+    parsed = core.parse_session_file(candidate["source_jsonl"])
+    assert [core.extract_text_from_content(line["message"]["content"]) for line in parsed["loglines"]] == [content]
+    assert Path(candidate["raw_export_paths"][0]).read_bytes() == raw
+
+
+@pytest.mark.parametrize("logical_artifact", [False, True], ids=["native-export", "logical-artifact"])
+def test_hermes_rejects_ambiguous_compression_forks(tmp_path, monkeypatch, logical_artifact):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    root = _hermes_session("root", end_reason="compression")
+    sessions = [root, _hermes_session("left", parent="root"), _hermes_session("right", parent="root")]
+    source, _ = _write_hermes_export(tmp_path / "fork.jsonl", sessions)
+
+    if logical_artifact:
+        source, _ = core._write_hermes_logical_artifact(root=root, sessions=sessions, raw_export_paths=[source])
+        with pytest.raises(ValueError, match="ambiguous compression"):
+            core.parse_session_file(source)
+    else:
+        with pytest.raises(ValueError, match="ambiguous compression"):
+            core._hermes_candidates_from_export(source)

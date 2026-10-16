@@ -503,7 +503,7 @@ ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-proj
 | `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
 | `--dry-run` | Preview changelog changes without writing entries; Hermes source export artifacts may still be materialized |
 | `--actor TEXT` | Override the changelog actor |
-| `--evaluator [codex|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
+| `--evaluator [codex\|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
 | `--model TEXT` | Model override for the evaluator (default: explicit flag, then env/config, then tool default) |
 
 Codex sync uses the rollout `cwd` first. If that is broad or outside a repo, Codex tool-call `workdir` values and local paths are treated as medium-confidence repo evidence; explicit `--project-root` can select a matching repo without an interactive prompt.
