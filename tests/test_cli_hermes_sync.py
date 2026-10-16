@@ -705,3 +705,37 @@ def test_new_session_sync_survives_relocation_of_prior_session_artifact(tmp_path
     entries = [json.loads(line) for line in entries_path.read_text().splitlines()]
     assert [entry["source"]["identity"]["session_id"] for entry in entries] == ["first-session", "second-session"]
     assert entries[0] == original
+
+
+def test_hermes_explicit_export_limit_bounds_evaluation_and_entries(tmp_path, monkeypatch):
+    _isolate_hermes_exports(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _mock_git_roots(monkeypatch, repo)
+    calls = _stub_external_evaluator(monkeypatch)
+    source = _write_export(
+        tmp_path / "multiple.jsonl",
+        _session("first", cwd=str(repo)),
+        _session("second", cwd=str(repo)),
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "changelog",
+            "sync",
+            "--hermes",
+            "--source-jsonl",
+            str(source),
+            "--limit",
+            "1",
+            "--actor",
+            "limit-test",
+            "--evaluator",
+            "codex",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    entries = _read_entries(repo / ".changelog" / "limit-test" / "entries.jsonl")
+    assert [entry["source"]["identity"]["session_id"] for entry in entries] == ["first"]
+    assert len(calls) == 1

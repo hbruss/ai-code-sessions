@@ -3,6 +3,9 @@
 import json
 import stat
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -648,3 +651,33 @@ sys.stdout.buffer.write(by_id[sys.argv[sys.argv.index("--session-id") + 1]] if "
     assert candidate["physical_session_ids"] == ["past", "bridge", "middle", "future"]
     assert candidate["start"] == datetime.fromtimestamp(epoch - 20, timezone.utc).isoformat()
     assert candidate["end"] == datetime.fromtimestamp(epoch + 40, timezone.utc).isoformat()
+
+
+def test_concurrent_hermes_exports_publish_only_complete_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_HERMES_EXPORTS_DIR", str(tmp_path / "exports"))
+    raw = (json.dumps(_hermes_session("concurrent")) + "\n").encode("utf-8")
+    writer_opened = threading.Event()
+    release_writer = threading.Event()
+    original_fdopen = core.os.fdopen
+
+    @contextmanager
+    def delayed_first_writer(descriptor, *args, **kwargs):
+        with original_fdopen(descriptor, *args, **kwargs) as output:
+            if threading.current_thread().name == "hermes-evidence_0":
+                writer_opened.set()
+                assert release_writer.wait(timeout=10)
+            yield output
+
+    monkeypatch.setattr(core.os, "fdopen", delayed_first_writer)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hermes-evidence") as pool:
+        first = pool.submit(core._store_hermes_evidence, raw=raw, subdirectory="raw")
+        try:
+            assert writer_opened.wait(timeout=10)
+            second = pool.submit(core._store_hermes_evidence, raw=raw, subdirectory="raw").result(timeout=10)
+        finally:
+            release_writer.set()
+        first_path = first.result(timeout=10)
+
+    assert first_path == second
+    assert first_path.read_bytes() == raw
+    assert list(first_path.parent.iterdir()) == [first_path]

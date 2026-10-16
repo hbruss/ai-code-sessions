@@ -499,7 +499,7 @@ ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-proj
 | `--since TEXT` | Start of the scan window (defaults to 48 hours before `--until`/now) |
 | `--source-jsonl PATH` | Sync a native JSONL file; requires exactly one source flag (`--codex`, `--claude`, `--omp`, or `--hermes`), and cannot combine with time-window flags. Hermes exports may contain several logical sessions |
 | `--until TEXT` | End of the scan window (defaults to now) |
-| `--limit INTEGER` | Maximum number of discovered sessions to consider (when `--project-root` is set, the limit applies after repo filtering) |
+| `--limit INTEGER` | Maximum number of native sessions to consider, including explicit exports (when `--project-root` is set, the limit applies after repo filtering) |
 | `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
 | `--dry-run` | Preview changelog changes without writing entries; Hermes source export artifacts may still be materialized |
 | `--actor TEXT` | Override the changelog actor |

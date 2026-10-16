@@ -5452,22 +5452,18 @@ def _store_hermes_evidence(*, raw: bytes, subdirectory: str) -> Path:
     try:
         export_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.mkdir(mode=0o700, exist_ok=True)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        try:
-            descriptor = os.open(destination, flags, 0o600)
-        except FileExistsError:
-            if destination.read_bytes() != raw:
-                raise ValueError(f"Hermes evidence digest collision at {destination}") from None
-            return destination.resolve()
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{digest}.", suffix=".tmp", dir=directory)
+        temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as output:
                 output.write(raw)
-        except OSError:
             try:
-                destination.unlink()
-            except OSError:
-                pass
-            raise
+                os.link(temporary, destination)
+            except FileExistsError:
+                if destination.read_bytes() != raw:
+                    raise ValueError(f"Hermes evidence digest collision at {destination}") from None
+        finally:
+            temporary.unlink()
     except ValueError:
         raise
     except OSError as error:

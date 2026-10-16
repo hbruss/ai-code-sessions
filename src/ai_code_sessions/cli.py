@@ -1788,8 +1788,6 @@ def changelog_sync_cmd(
             if tool_hermes:
                 raise click.ClickException(f"Hermes native discovery failed: {exc}") from exc
             raise
-        if limit is not None and scope_root is None:
-            candidates = candidates[:limit]
     else:
         source_tool = requested_tools[0]
         try:
@@ -1800,6 +1798,9 @@ def changelog_sync_cmd(
                 candidates = [candidate]
         except ValueError as exc:
             raise click.ClickException(f"--source-jsonl {source_jsonl}: {exc}") from exc
+
+    if limit is not None and scope_root is None:
+        candidates = candidates[:limit]
 
     if binding_root is not None:
         for candidate in candidates:
