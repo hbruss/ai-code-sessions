@@ -522,7 +522,7 @@ def test_built_artifacts_include_packaged_changelog_skill_files(tmp_path):
     env["UV_CACHE_DIR"] = str(tmp_path / "uv-cache")
 
     result = subprocess.run(
-        ["uv", "build", "--out-dir", str(build_dir), "--clear"],
+        ["uv", "build", "--out-dir", str(build_dir)],
         cwd=repo_root,
         env=env,
         capture_output=True,

@@ -1,6 +1,6 @@
 # Changelog Generation
 
-`ai-code-sessions` can generate structured changelog entries either from recent native Codex, Claude, or OMP sessions or from exported transcript directories. These aren't git commit messages; they're higher-level summaries of what an entire AI-assisted coding session accomplished.
+`ai-code-sessions` generates structured changelog entries from native Codex, Claude, OMP, and Hermes sessions or exported transcript directories. These aren't git commit messages; they're higher-level summaries of what an entire AI-assisted coding session accomplished.
 
 ## Why Changelogs?
 
@@ -28,7 +28,7 @@ Each changelog entry includes:
 | `schema_version` | Entry schema version | `1` |
 | `run_id` | Content-based hash (prevents duplicates) | `"c2157e415f33ca4a"` |
 | `created_at` | When the entry was created | `"2026-01-04T10:17:01.096900+00:00"` |
-| `tool` | Session source (`"codex"`, `"claude"`, `"omp"`, or `"unknown"`) | `"codex"` |
+| `tool` | Session source (`"codex"`, `"claude"`, `"omp"`, `"hermes"`, or `"unknown"`) | `"codex"` |
 | `actor` | Changelog actor | `"russronchi"` |
 | `project` | Repo name | `"ai-code-sessions"` |
 | `project_root` | Repo root path | `"$HOME/.../ai-code-sessions"` |
@@ -81,7 +81,7 @@ ais changelog sync --codex
 # Sync OMP sessions that overlap the last 48 hours
 ais changelog sync --omp
 
-# Scan all tools over a custom window
+# Scan the three local-file sources over a custom window
 ais changelog sync --all --since "7 days ago"
 
 # Sync one explicit OMP JSONL file
@@ -96,6 +96,7 @@ Key behaviors:
 - The default scan window is the last 48 hours
 - Codex sync discovers sessions by overlap with the scan window, including long-running sessions that started earlier but ended or were updated during the window
 - OMP sync discovers top-level sessions under `~/.omp/agent/sessions/<encoded-project>/*.jsonl`; set `CTX_OMP_SESSIONS_DIR` to override the sessions directory
+- Hermes is opt-in with `--hermes`; default scans and `--all` keep the existing three local-file sources. Use `--all --hermes` to include all four.
 - `ais` writes only when repo targeting is high confidence
 - Codex tool-call `workdir` and local path usage can provide medium-confidence repo evidence when the rollout `cwd` is broad
 - If multiple repos are plausible, `ais` prompts you to choose
@@ -114,6 +115,58 @@ Sync-generated entries still include a `transcript` object, but `transcript.outp
 - `ais changelog sync` handles new native sessions and in-place updates for existing sync-owned rows
 - It does not perform bulk historical cleanup operations
 - It excludes explicit Codex subagent sessions from forward sync discovery
+
+### Hermes native exports
+
+Hermes support uses its native read-only JSONL export, not direct access to
+`state.db`. A compatible Hermes CLI must be available as `hermes`, or set
+`CTX_HERMES_CMD` to its executable path. Offline `--source-jsonl` ingestion does
+not require the Hermes CLI.
+
+```bash
+# Export and sync recent sessions from one runtime profile
+ais changelog sync --hermes --hermes-profile research --actor assistant
+
+# Bind missing project metadata explicitly; this does not override recorded paths
+ais changelog sync --hermes --hermes-profile research \
+  --hermes-project-root /path/to/repo --actor assistant
+
+# Import a retained native JSONL export
+ais changelog sync --hermes --source-jsonl /path/to/export.jsonl \
+  --hermes-profile research --hermes-project-root /path/to/repo --actor assistant
+
+# Include Hermes alongside the existing local-file sources
+ais changelog sync --all --hermes --hermes-profile research --dry-run
+```
+
+`--hermes-profile` targets a native profile and matches exported `profile_name`,
+not `transport_profile`. Discovery targets `default` if it is omitted. Explicit
+source/profile mismatches are errors.
+
+Hermes can export null `cwd` and `git_repo_root`. Without trustworthy repo
+metadata, the session stays unresolved unless `--hermes-project-root` supplies
+an explicit binding for the selected profile. The binding requires an explicit
+`--hermes-profile` and a real Git repo; it applies only when both native project
+fields are absent. Foreign, deleted, or conflicting recorded paths are not
+silently reassigned. `--project-root` remains a write filter, not a binding.
+Actor selection keeps the normal `--actor`/config rules; a Discord user ID or
+profile name is not guessed to be the actor.
+
+Each JSONL line is a complete physical Hermes session. Sync separates unrelated
+sessions and assembles verified compression continuations into one logical
+entry. Re-exporting, resuming, or compacting that conversation updates the same
+entry, preserving its `run_id` and `created_at`. Runtime profile plus logical
+root ID supplies identity; transport changes and export filenames do not.
+Branches/resets remain separate conversations; delegated sessions are excluded.
+Missing or ambiguous ancestry is an error rather than a guessed identity.
+
+Active and compaction-archived messages contribute evidence; undone/inactive
+messages remain in the raw export but not the summary digest. Native export
+snapshots and self-contained logical-session artifacts are retained privately
+under `hermes-exports/` beside the application's global config. Set
+`CTX_HERMES_EXPORTS_DIR` to use another location. Even `--dry-run` may materialize
+these source artifacts; it does not write changelog entries. Keep the artifacts:
+the changelog's `transcript.source_jsonl` points to its logical-session evidence.
 
 ### Historical Cleanup: Duplicate Native-Session Rows (`repair-native-sync`)
 

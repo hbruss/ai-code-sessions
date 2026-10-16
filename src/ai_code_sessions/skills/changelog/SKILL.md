@@ -60,7 +60,7 @@ Each line in `entries.jsonl` is a JSON object:
 | `schema_version` | int | Always `1` for current format |
 | `run_id` | string | Content-addressed hash (16 chars), unique per session |
 | `created_at` | string | ISO 8601 timestamp when entry was generated |
-| `tool` | string | `"codex"`, `"claude"`, `"omp"`, or `"unknown"` |
+| `tool` | string | `"codex"`, `"claude"`, `"omp"`, `"hermes"`, or `"unknown"` |
 | `actor` | string | Who ran the session |
 | `project` | string | Project/repo name |
 | `label` | string\|null | Human-friendly session label |
@@ -233,6 +233,7 @@ ais changelog since yesterday --format bullets   # Markdown with bullets
 # Filtering
 ais changelog since yesterday --tool codex       # Only Codex sessions
 ais changelog since yesterday --tool omp         # Only OMP sessions
+ais changelog since yesterday --tool hermes      # Only Hermes sessions
 ais changelog since yesterday --tag feat         # Only feature work
 ```
 
@@ -313,7 +314,7 @@ rg '"result":\s*"fail"' .changelog/*/entries.jsonl
 
 ## Transcripts
 
-Each entry's `transcript` field contains paths to the full transcript artifacts and source log. Native source logs live in `~/.codex/sessions/...`, `~/.claude/projects/<encoded-path>/*.jsonl`, or `~/.omp/agent/sessions/<encoded-project>/*.jsonl` depending on which tool ran the session.
+Each entry's `transcript` field contains paths to the full transcript artifacts and source log. Native source logs live in `~/.codex/sessions/...`, `~/.claude/projects/<encoded-path>/*.jsonl`, or `~/.omp/agent/sessions/<encoded-project>/*.jsonl`. Hermes entries point to retained native-export artifacts; preserve those files as session evidence.
 
 ### Get Transcript Path
 
@@ -331,6 +332,27 @@ open "$(tail -1 .changelog/*/entries.jsonl | jq -r '.transcript.index_html')"
 # Search for session, then extract transcript path
 rg "OAuth" .changelog/*/entries.jsonl | head -1 | jq -r '.transcript.index_html'
 ```
+
+## Hermes Session Closeout
+
+Use the existing evaluator and select Hermes as the source:
+
+```bash
+ais changelog sync --hermes --hermes-profile research --actor assistant
+```
+
+If that profile's exports have no native project metadata, add
+`--hermes-project-root /path/to/repo` only when the operator has explicitly
+associated the profile with that repo. Do not infer it from chat text, channel
+names, or the transport profile. Existing recorded paths cannot be overridden by
+this binding. `--project-root` is only a filter.
+
+Use `--source-jsonl /path/to/export.jsonl` for a retained native export.
+Compression segments update one logical entry; branches/resets remain separate
+and delegated sessions are excluded. Do not count re-exported or compacted
+sessions as new work. Raw/logical evidence lives under `hermes-exports/` beside
+global config, or `CTX_HERMES_EXPORTS_DIR`. Hermes is opt-in; `--all` retains the
+three existing local-file sources unless combined with `--hermes`.
 
 ## Best Practices
 

@@ -22,7 +22,7 @@ cli: ai-code-sessions
 - `uv run --group dev pytest`: run tests (dev dependencies live in the `dev` group)
 - `uv run --group dev pytest --snapshot-update`: update Syrupy snapshots (use only for intentional HTML changes)
 - `uv run --project . ai-code-sessions --help`: run the CLI from this repo
-- `uv build --out-dir dist --clear`: build wheel + sdist (for PyPI)
+- `uv build --out-dir dist`: build wheel + sdist (for PyPI); use a fresh output directory when isolation is needed.
 - `twine check dist/*`: validate built artifacts before upload
 - `uv run --project . ai-code-sessions json /path/to/session.jsonl -o ./out --label "My label"`: convert a specific JSON/JSONL log
 - `uv run --project . ai-code-sessions export-latest ... --changelog`: export + append a changelog entry (optional; actor comes from config/env, or override with `--changelog-actor`)

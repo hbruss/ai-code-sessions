@@ -54,6 +54,7 @@ from .core import (
     _legacy_ctx_metadata,
     _load_config,
     _maybe_copy_native_jsonl_into_legacy_session_dir,
+    _hermes_candidates_from_export,
     _native_session_candidate_from_source,
     _now_iso8601,
     _packaged_skill_path,
@@ -1569,18 +1570,23 @@ def _resolve_changelog_sync_tools(
     tool_codex: bool,
     tool_claude: bool,
     tool_omp: bool,
+    tool_hermes: bool,
     tool_all: bool,
 ) -> tuple[str, ...]:
-    if tool_all or (not tool_codex and not tool_claude and not tool_omp):
-        return ("codex", "claude", "omp")
-
-    tools: list[str] = []
-    if tool_codex:
-        tools.append("codex")
-    if tool_claude:
-        tools.append("claude")
-    if tool_omp:
-        tools.append("omp")
+    if tool_all:
+        tools = ["codex", "claude", "omp"]
+    elif not tool_codex and not tool_claude and not tool_omp and not tool_hermes:
+        tools = ["codex", "claude", "omp"]
+    else:
+        tools = []
+        if tool_codex:
+            tools.append("codex")
+        if tool_claude:
+            tools.append("claude")
+        if tool_omp:
+            tools.append("omp")
+    if tool_hermes:
+        tools.append("hermes")
     return tuple(tools)
 
 
@@ -1672,13 +1678,20 @@ def _echo_changelog_sync_auth_failure_help(*, evaluator: str, project_root: Path
 @click.option("--codex", "tool_codex", is_flag=True, help="Sync native Codex sessions only.")
 @click.option("--claude", "tool_claude", is_flag=True, help="Sync native Claude sessions only.")
 @click.option("--omp", "tool_omp", is_flag=True, help="Sync native OMP (oh-my-pi) sessions only.")
-@click.option("--all", "tool_all", is_flag=True, help="Sync Codex, Claude, and OMP sessions (default).")
+@click.option("--all", "tool_all", is_flag=True, help="Sync Codex, Claude, and OMP; add Hermes with --hermes.")
+@click.option("--hermes", "tool_hermes", is_flag=True, help="Sync native Hermes sessions (opt-in).")
+@click.option("--hermes-profile", help="Select a Hermes runtime profile (requires --hermes).")
+@click.option(
+    "--hermes-project-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Bind Hermes sessions with no native project evidence to this Git repo (requires --hermes-profile).",
+)
 @click.option(
     "--source-jsonl",
     "source_jsonl",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
-    help="Sync exactly one session from this native JSONL file (requires exactly one of --codex/--claude/--omp).",
+    help="Sync exactly one source export (requires exactly one source flag).",
 )
 @click.option(
     "--since",
@@ -1714,6 +1727,9 @@ def changelog_sync_cmd(
     tool_claude,
     tool_omp,
     tool_all,
+    tool_hermes,
+    hermes_profile,
+    hermes_project_root,
     source_jsonl,
     since,
     until,
@@ -1724,14 +1740,30 @@ def changelog_sync_cmd(
     evaluator,
     model,
 ):
-    """Sync recent native Codex/Claude/OMP sessions into per-repo changelog entries."""
+    """Sync recent native Codex/Claude/OMP sessions and optionally Hermes into per-repo changelogs."""
     if limit is not None and limit <= 0:
         raise click.ClickException("--limit must be a positive integer")
 
-    tool_flag_count = sum((bool(tool_codex), bool(tool_claude), bool(tool_omp)))
+    hermes_profile_value = (hermes_profile or "").strip() or None
+    if (hermes_profile is not None or hermes_project_root is not None) and not tool_hermes:
+        raise click.ClickException("--hermes-profile and --hermes-project-root require --hermes")
+    if hermes_profile is not None and hermes_profile_value is None:
+        raise click.ClickException("--hermes-profile must not be empty")
+    if hermes_project_root is not None and hermes_profile_value is None:
+        raise click.ClickException("--hermes-project-root requires an explicit --hermes-profile")
+
+    binding_root = None
+    if hermes_project_root is not None:
+        binding_root = _git_toplevel(Path(hermes_project_root).expanduser())
+        if binding_root is None:
+            raise click.ClickException(f"--hermes-project-root {hermes_project_root} must resolve to a Git repository")
+
+    tool_flag_count = sum((bool(tool_codex), bool(tool_claude), bool(tool_omp), bool(tool_hermes)))
     if source_jsonl is not None:
         if tool_all or tool_flag_count != 1:
-            raise click.ClickException("--source-jsonl requires exactly one of --codex, --claude, or --omp")
+            raise click.ClickException(
+                "--source-jsonl requires exactly one of --codex, --claude, or --omp (or --hermes)"
+            )
         if since is not None or until is not None:
             raise click.ClickException("--source-jsonl cannot be combined with --since/--until")
 
@@ -1739,6 +1771,7 @@ def changelog_sync_cmd(
         tool_codex=tool_codex,
         tool_claude=tool_claude,
         tool_omp=tool_omp,
+        tool_hermes=tool_hermes,
         tool_all=tool_all,
     )
     scope_root = Path(project_root).resolve() if project_root else None
@@ -1746,16 +1779,33 @@ def changelog_sync_cmd(
     if source_jsonl is None:
         ref_root = scope_root or (_git_toplevel(Path.cwd()) or Path.cwd().resolve())
         since_dt, until_dt = _resolve_changelog_sync_window(since_ref=since, until_ref=until, ref_root=ref_root)
-        candidates = _discover_native_sessions(tools=requested_tools, since=since_dt, until=until_dt)
+        discovery_kwargs = {"tools": requested_tools, "since": since_dt, "until": until_dt}
+        if tool_hermes:
+            discovery_kwargs["hermes_profile"] = hermes_profile_value or "default"
+        try:
+            candidates = _discover_native_sessions(**discovery_kwargs)
+        except ValueError as exc:
+            if tool_hermes:
+                raise click.ClickException(f"Hermes native discovery failed: {exc}") from exc
+            raise
         if limit is not None and scope_root is None:
             candidates = candidates[:limit]
     else:
         source_tool = requested_tools[0]
         try:
-            candidate = _native_session_candidate_from_source(tool=source_tool, source_jsonl=source_jsonl)
+            if source_tool == "hermes":
+                candidates = _hermes_candidates_from_export(source_jsonl, profile=hermes_profile_value)
+            else:
+                candidate = _native_session_candidate_from_source(tool=source_tool, source_jsonl=source_jsonl)
+                candidates = [candidate]
         except ValueError as exc:
             raise click.ClickException(f"--source-jsonl {source_jsonl}: {exc}") from exc
-        candidates = [candidate]
+
+    if binding_root is not None:
+        for candidate in candidates:
+            if candidate.get("tool") != "hermes":
+                continue
+            candidate["hermes_project_root"] = str(binding_root)
 
     explicit_evaluator = (evaluator or "").strip().lower()
     env_evaluator = (
@@ -2526,7 +2576,7 @@ def changelog_backfill_cmd(project_root, sessions_dir, actor, evaluator, model, 
 @click.option("--actor", help="Filter by actor.")
 @click.option(
     "--tool",
-    type=click.Choice(["codex", "claude", "omp"], case_sensitive=False),
+    type=click.Choice(["codex", "claude", "omp", "hermes"], case_sensitive=False),
     help="Filter by tool.",
 )
 @click.option(

@@ -1,7 +1,7 @@
 [project]
 name = "ai-code-sessions"
-version = "0.2.0"
-description = "Convert Codex and Claude Code session logs to HTML transcripts"
+version = "0.3.0"
+description = "Generate transcripts and changelogs from Codex, Claude Code, OMP, and Hermes sessions"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

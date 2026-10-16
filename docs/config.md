@@ -173,6 +173,8 @@ Environment variables override config file settings. Useful for:
 | `CTX_CODEX_CMD` | Codex executable name/path | `codex` |
 | `CTX_CLAUDE_CMD` | Claude executable name/path | `claude` |
 | `CTX_OMP_SESSIONS_DIR` | OMP sessions directory for changelog sync | `~/.omp/agent/sessions` |
+| `CTX_HERMES_CMD` | Hermes executable path for opt-in native exports | `hermes` |
+| `CTX_HERMES_EXPORTS_DIR` | Private retained Hermes raw/logical JSONL export directory | `hermes-exports/` beside the global application config |
 
 ### Changelog Settings
 
