@@ -1744,7 +1744,7 @@ def changelog_sync_cmd(
     if limit is not None and limit <= 0:
         raise click.ClickException("--limit must be a positive integer")
 
-    hermes_profile_value = (hermes_profile or "").strip() or None
+    hermes_profile_value = (hermes_profile or "").strip().casefold() or None
     if (hermes_profile is not None or hermes_project_root is not None) and not tool_hermes:
         raise click.ClickException("--hermes-profile and --hermes-project-root require --hermes")
     if hermes_profile is not None and hermes_profile_value is None:

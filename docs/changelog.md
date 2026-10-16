@@ -140,8 +140,9 @@ ais changelog sync --all --hermes --hermes-profile research --dry-run
 ```
 
 `--hermes-profile` targets a native profile and matches exported `profile_name`,
-not `transport_profile`. Discovery targets `default` if it is omitted. Explicit
-source/profile mismatches are errors.
+not `transport_profile`. Names are stripped and case-folded like Hermes's CLI.
+Discovery targets `default` if it is omitted. Explicit source/profile mismatches
+are errors.
 
 Discovery exports the selected profile without Hermes's bulk time filters,
 which exclude active sessions, then applies `--since`/`--until` locally. The

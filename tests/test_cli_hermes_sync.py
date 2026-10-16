@@ -176,6 +176,7 @@ def test_hermes_source_profile_binding_persists_and_query_filters(tmp_path, monk
         _session("profile-session", profile="work-profile"),
     )
     args = _sync_args(source_jsonl, repo_root, binding_root=nested_binding)
+    args[args.index("--hermes-profile") + 1] = "  WoRk-ProFile  "
 
     # Existing --project-root remains a filter; the Hermes binding is not a way to
     # route a candidate into a different requested target.
