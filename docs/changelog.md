@@ -169,6 +169,10 @@ root ID supplies identity; transport changes and export filenames do not.
 Branches/resets remain separate conversations; delegated sessions are excluded.
 Missing or ambiguous ancestry is an error rather than a guessed identity.
 
+Lineages with no eligible content in the normalized digest are skipped before
+evaluation or changelog writes; their raw exports are still retained. Read-only
+conversations with real discussion remain eligible even without file changes.
+
 Active and compaction-archived messages contribute evidence; undone/inactive
 messages remain in the raw export but not the summary digest. Repeated message
 UIDs use the latest exported version; native tool-occurrence UIDs keep results
