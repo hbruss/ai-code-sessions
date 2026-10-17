@@ -305,6 +305,10 @@ def _get_jsonl_summary(filepath, max_length=200):
                 try:
                     obj = json.loads(line)
                     # First priority: summary type entries
+                    if _looks_like_hermes_session_jsonl(obj):
+                        title = obj.get("title")
+                        if isinstance(title, str) and title.strip():
+                            return _truncate_summary(title.strip())
                     if obj.get("type") == "summary" and obj.get("summary"):
                         return _truncate_summary(obj["summary"])
                 except json.JSONDecodeError:
@@ -713,6 +717,194 @@ def _looks_like_omp_session_jsonl(first_obj: dict) -> bool:
     )
 
 
+def _looks_like_hermes_session_jsonl(first_obj: dict) -> bool:
+    return (
+        isinstance(first_obj, dict)
+        and isinstance(first_obj.get("id"), str)
+        and isinstance(first_obj.get("profile_name"), str)
+        and isinstance(first_obj.get("messages"), list)
+    )
+
+
+def _hermes_timestamp(value: object) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return ""
+    if isinstance(value, str):
+        try:
+            numeric = float(value)
+        except ValueError:
+            numeric = None
+        if numeric is not None:
+            try:
+                return datetime.fromtimestamp(numeric, timezone.utc).isoformat()
+            except (OverflowError, OSError, ValueError):
+                return ""
+        parsed = _parse_iso8601(value)
+        return parsed.astimezone(timezone.utc).isoformat() if parsed else ""
+    return ""
+
+
+def _hermes_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else str(value)
+
+
+def _hermes_tool_result(message: dict) -> dict:
+    raw_content = message.get("content")
+    payload = _safe_json_loads(raw_content) if isinstance(raw_content, str) else raw_content
+    if isinstance(payload, dict):
+        output = payload.get("output", payload.get("stdout", raw_content))
+        error = payload.get("error") or message.get("error")
+        stderr = payload.get("stderr") or message.get("stderr")
+        exit_code = payload.get("exit_code", message.get("exit_code"))
+    else:
+        output = raw_content
+        error = message.get("error")
+        stderr = message.get("stderr")
+        exit_code = message.get("exit_code")
+    if isinstance(exit_code, str):
+        try:
+            exit_code = int(exit_code)
+        except ValueError:
+            exit_code = None
+    if error:
+        output = f"{_hermes_text(output)}\nError: {_hermes_text(error)}".strip()
+    if stderr:
+        output = f"{_hermes_text(output)}\n{_hermes_text(stderr)}".strip()
+    failed_exit = isinstance(exit_code, (int, float)) and not isinstance(exit_code, bool) and exit_code != 0
+    tool_uid = message.get("tool_call_uid")
+    if not isinstance(tool_uid, str) or not tool_uid:
+        tool_uid = message.get("tool_call_id") or message.get("toolCallId")
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_uid,
+        "content": _hermes_text(output),
+        "is_error": bool(message.get("is_error") or message.get("isError") or error or failed_exit),
+    }
+
+
+def _parse_hermes_session_jsonl(filepath: Path) -> dict:
+    """Convert one validated Hermes logical session to the shared logline format."""
+    _, sessions = _read_hermes_export(Path(filepath))
+    if not sessions:
+        raise ValueError("Hermes export contains no session records")
+
+    if sessions[0].get(_HERMES_ARTIFACT_ROOT_KEY) == sessions[0].get("id"):
+        _hermes_logical_identity_from_source(Path(filepath))
+    else:
+        groups = _hermes_group_records(sessions)
+        if len(sessions) == 1:
+            pass
+        elif len(groups) != 1 or len(groups[0][1]) != len(sessions):
+            raise ValueError("Hermes export contains unrelated sessions; parse one logical chain at a time")
+        else:
+            sessions = groups[0][1]
+
+    meta = {"session_id": sessions[0]["id"]}
+    meta.update(
+        {
+            key: sessions[0][key]
+            for key in ("profile_name", "transport_profile", "source", "parent_session_id", "cwd", "git_repo_root")
+            if key in sessions[0]
+        }
+    )
+    loglines = []
+    if (
+        sessions[0].get("hidden")
+        or sessions[0].get("source") == "tool"
+        or _hermes_model_config(sessions[0]).get("_delegate_from")
+    ):
+        return {"loglines": loglines, "meta": meta, "source_format": "hermes_jsonl"}
+
+    latest_by_uid = {}
+    for session in sessions:
+        if session.get("hidden"):
+            continue
+        for row in session["messages"]:
+            if isinstance(row, dict):
+                message_uid = row.get("message_uid")
+                if isinstance(message_uid, str) and message_uid:
+                    latest_by_uid[message_uid] = row
+
+    for session in sessions:
+        if session.get("hidden"):
+            continue
+        for row in session["messages"]:
+            if not isinstance(row, dict) or row.get("hidden") or row.get("is_hidden"):
+                continue
+            if row.get("display_kind") in {"hidden", "system", "session_meta"}:
+                continue
+            role = row.get("role")
+            if role in {"system", "developer", "session_meta"}:
+                continue
+            compacted = bool(row.get("compacted"))
+            if not row.get("active") and not compacted:
+                continue
+            message_uid = row.get("message_uid")
+            if isinstance(message_uid, str) and message_uid and latest_by_uid[message_uid] is not row:
+                continue
+            timestamp = _hermes_timestamp(row.get("timestamp"))
+
+            if role == "tool":
+                message = {"role": "assistant", "content": [_hermes_tool_result(row)]}
+                logline_type = "assistant"
+            elif role in {"user", "assistant"}:
+                blocks = []
+                content = row.get("content")
+                if isinstance(content, str) and content:
+                    blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    blocks.extend(block for block in content if isinstance(block, dict))
+                if role == "assistant":
+                    tool_calls = row.get("tool_calls")
+                    tool_uids = _safe_json_loads(row.get("tool_call_uids"))
+                    tool_uids = tool_uids if isinstance(tool_uids, dict) else {}
+                    occurrences = {}
+                    for call in tool_calls if isinstance(tool_calls, list) else []:
+                        if not isinstance(call, dict):
+                            continue
+                        call_id = call.get("id") or call.get("call_id") or ""
+                        tool_uid = tool_uids.get(call_id) if isinstance(call_id, str) else None
+                        if isinstance(tool_uid, list):
+                            occurrence = occurrences.get(call_id, 0)
+                            occurrences[call_id] = occurrence + 1
+                            tool_uid = tool_uid[occurrence] if occurrence < len(tool_uid) else None
+                        if not isinstance(tool_uid, str) or not tool_uid:
+                            tool_uid = call_id
+                        function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                        arguments = _safe_json_loads(function.get("arguments"))
+                        if not isinstance(arguments, dict):
+                            arguments = {"arguments": arguments} if arguments is not None else {}
+                        blocks.append(
+                            {
+                                "type": "tool_use",
+                                "name": function.get("name") or call.get("name") or "Unknown tool",
+                                "input": arguments,
+                                "id": tool_uid,
+                            }
+                        )
+                if not blocks:
+                    continue
+                message = {"role": role, "content": blocks}
+                logline_type = role
+            else:
+                continue
+
+            logline = {"type": logline_type, "timestamp": timestamp, "message": message}
+            if row.get("absorbed_message_uids") is not None or (
+                compacted and (row.get("is_summary") or row.get("is_compact_summary") or row.get("summary"))
+            ):
+                logline["isCompactSummary"] = True
+            loglines.append(logline)
+    return {"loglines": loglines, "meta": meta, "source_format": "hermes_jsonl"}
+
+
 def _read_omp_session_header(filepath: Path) -> dict | None:
     """Return the first OMP session header object from a JSONL file."""
     parsed_count = 0
@@ -741,10 +933,8 @@ def _read_omp_session_header(filepath: Path) -> dict | None:
 def parse_session_file(filepath):
     """Parse a session file and return normalized data.
 
-    Supports JSON and JSONL formats from:
-    - Claude Code (local JSONL or exported JSON)
-    - Codex CLI rollouts (JSONL)
-    - OMP session logs (JSONL)
+    Supports JSON and JSONL formats from Claude Code, Codex CLI, OMP, and
+    Hermes native exports.
 
     Returns a dict with 'loglines' key containing normalized entries.
     """
@@ -756,6 +946,8 @@ def parse_session_file(filepath):
             return _parse_codex_rollout_jsonl(filepath)
         if first and _looks_like_omp_session_jsonl(first):
             return _parse_omp_session_jsonl(filepath)
+        if first and _looks_like_hermes_session_jsonl(first):
+            return _parse_hermes_session_jsonl(filepath)
         return _parse_claude_jsonl_file(filepath)
 
     # Standard JSON format (Claude web JSON export)
@@ -1112,14 +1304,41 @@ _AUTO_CHANGELOG_TRANSCRIPT_FIELD = object()
 _NATIVE_SESSION_IDENTITY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["tool", "native_source_path", "start", "end"],
+    "required": ["tool", "native_source_path", "start"],
     "properties": {
         "tool": {"type": "string", "minLength": 1},
         "native_source_path": {"type": "string", "minLength": 1},
         "start": {"type": "string", "minLength": 1},
         "end": {"type": "string", "minLength": 1},
+        "profile_name": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+    },
+    "allOf": [
+        {
+            "if": {"properties": {"tool": {"const": "hermes"}}, "required": ["tool"]},
+            "then": {"required": ["profile_name", "session_id"]},
+        }
+    ],
+}
+_NATIVE_SESSION_PROVENANCE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "profile_name",
+        "transport_profile",
+        "physical_session_ids",
+        "transport_profiles",
+        "raw_export_paths",
+    ],
+    "properties": {
+        "profile_name": {"type": "string", "minLength": 1},
+        "transport_profile": {"type": ["string", "null"], "minLength": 1},
+        "physical_session_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "transport_profiles": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "raw_export_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
     },
 }
+
 
 _CHANGELOG_ENTRY_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1150,7 +1369,7 @@ _CHANGELOG_ENTRY_SCHEMA = {
         "schema_version": {"type": "integer", "const": CHANGELOG_ENTRY_SCHEMA_VERSION},
         "run_id": {"type": "string", "minLength": 1},
         "created_at": {"type": "string", "minLength": 1},
-        "tool": {"type": "string", "enum": ["codex", "claude", "omp", "unknown"]},
+        "tool": {"type": "string", "enum": ["codex", "claude", "omp", "hermes", "unknown"]},
         "actor": {"type": "string", "minLength": 1},
         "project": {"type": "string", "minLength": 1},
         "project_root": {"type": "string", "minLength": 1},
@@ -1177,7 +1396,17 @@ _CHANGELOG_ENTRY_SCHEMA = {
             "properties": {
                 "kind": {"type": "string", "const": "native_session"},
                 "identity": _NATIVE_SESSION_IDENTITY_SCHEMA,
+                "provenance": _NATIVE_SESSION_PROVENANCE_SCHEMA,
             },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"identity": {"properties": {"tool": {"const": "hermes"}}}},
+                        "required": ["identity"],
+                    },
+                    "then": {"required": ["provenance"]},
+                }
+            ],
         },
         "summary": {"type": "string", "minLength": 1, "maxLength": 500},
         "bullets": {
@@ -1302,7 +1531,14 @@ def _canonicalize_iso8601_utc(value: str) -> str | None:
 
 
 def _canonical_session_identity_for_source(
-    *, tool: str, source_jsonl: Path, start: str, end: str, session_id: str | None = None
+    *,
+    tool: str,
+    source_jsonl: Path,
+    start: str,
+    end: str,
+    session_id: str | None = None,
+    profile_name: str | None = None,
+    logical_root_session_id: str | None = None,
 ) -> dict:
     """Build the canonical identity for a native session source."""
 
@@ -1315,14 +1551,20 @@ def _canonical_session_identity_for_source(
         "native_source_path": str(Path(source_jsonl).resolve()),
         "start": start_value,
     }
-    if session_id_value:
+    if tool_value == "hermes":
+        profile_value = profile_name.strip() if isinstance(profile_name, str) else ""
+        root_id_value = logical_root_session_id.strip() if isinstance(logical_root_session_id, str) else ""
+        if not profile_value or not root_id_value:
+            raise ValueError("Hermes session identity requires profile_name and logical_root_session_id")
+        identity["profile_name"] = profile_value
+        identity["session_id"] = root_id_value
+    elif session_id_value:
         identity["session_id"] = session_id_value
     return identity
 
 
 def _entry_session_identity(entry: dict) -> dict | None:
     """Return the canonical native-session identity for a changelog entry."""
-
     if not isinstance(entry, dict):
         return None
 
@@ -1335,6 +1577,26 @@ def _entry_session_identity(entry: dict) -> dict | None:
             identity_start = identity.get("start")
             identity_end = identity.get("end")
             identity_session_id = identity.get("session_id")
+            if isinstance(identity_tool, str) and identity_tool.strip().lower() == "hermes":
+                if str(entry.get("tool") or "").strip().lower() != "hermes":
+                    raise ValueError("Stored Hermes identity has a mismatched top-level tool")
+                profile_name = identity.get("profile_name")
+                root_id = identity.get("session_id")
+                if not all(
+                    isinstance(value, str) and value.strip()
+                    for value in (profile_name, root_id, identity_source_jsonl, identity_start)
+                ):
+                    raise ValueError("Stored Hermes identity is missing profile, session, source, or start fields")
+                # Persisted identity must survive moving evidence between hosts.
+                return _canonical_session_identity_for_source(
+                    tool=identity_tool,
+                    source_jsonl=Path(identity_source_jsonl),
+                    start=identity_start,
+                    end=identity_end if isinstance(identity_end, str) else "",
+                    profile_name=profile_name,
+                    logical_root_session_id=root_id,
+                )
+
             if (
                 isinstance(identity_tool, str)
                 and identity_tool.strip()
@@ -1361,10 +1623,12 @@ def _entry_session_identity(entry: dict) -> dict | None:
                             canonical_identity["session_id"] = discovered_session_id
                     return canonical_identity
 
+    if str(entry.get("tool") or "").strip().lower() == "hermes":
+        raise ValueError("Stored Hermes entry is missing canonical source identity")
+
     tool = entry.get("tool")
     start = entry.get("start")
     end = entry.get("end")
-
     if not isinstance(tool, str) or not tool.strip():
         return None
     if not isinstance(start, str) or not start.strip():
@@ -1410,6 +1674,19 @@ def _canonical_session_identity_from_transcript(
         return None
     if not isinstance(end, str) or not end.strip():
         return None
+    if tool.strip().lower() == "hermes":
+        if not isinstance(source_jsonl, (str, Path)) or not str(source_jsonl).strip():
+            raise ValueError("Hermes session identity requires a readable logical artifact")
+        source_path = Path(source_jsonl).expanduser().resolve()
+        profile_name, root_id = _hermes_logical_identity_from_source(source_path)
+        return _canonical_session_identity_for_source(
+            tool=tool,
+            source_jsonl=source_path,
+            start=start,
+            end=end,
+            profile_name=profile_name,
+            logical_root_session_id=root_id,
+        )
 
     native_source_path = _native_source_path_from_match_metadata(source_match_json)
     if native_source_path is None:
@@ -1437,12 +1714,12 @@ def _canonical_session_identity_from_transcript(
 
 
 def _native_session_id_for_source(*, tool: str, source_jsonl: Path | None) -> str | None:
+    normalized_tool = (tool or "").strip().lower()
     if not isinstance(source_jsonl, Path):
         return None
     source_path = source_jsonl.expanduser()
     if not source_path.exists():
         return None
-    normalized_tool = (tool or "").strip().lower()
     try:
         if normalized_tool == "codex":
             _, _, _, session_id = _codex_rollout_session_times(source_path)
@@ -1544,6 +1821,12 @@ def _session_identity_key(identity: dict | None) -> tuple[str, ...] | None:
     if not isinstance(identity, dict):
         return None
     tool = identity.get("tool")
+    if isinstance(tool, str) and tool.strip().lower() == "hermes":
+        profile_name = identity.get("profile_name")
+        root_id = identity.get("session_id")
+        if not all(isinstance(value, str) and value.strip() for value in (profile_name, root_id)):
+            return None
+        return "hermes", profile_name, root_id
     session_id = identity.get("session_id")
     native_source_path = identity.get("native_source_path")
     start = identity.get("start")
@@ -1672,13 +1955,17 @@ def _write_json_schema_tempfile(schema: dict) -> Path:
 
 
 def _compute_run_id(*, tool: str, start: str, end: str, session_dir: Path, source_jsonl: Path) -> str:
-    payload = {
-        "tool": tool or "unknown",
-        "start": start or "",
-        "end": end or "",
-        "session_dir": str(session_dir),
-        "source_jsonl": str(source_jsonl),
-    }
+    if (tool or "").strip().lower() == "hermes":
+        profile_name, root_id = _hermes_logical_identity_from_source(Path(source_jsonl))
+        payload = {"tool": "hermes", "profile_name": profile_name, "logical_root_session_id": root_id}
+    else:
+        payload = {
+            "tool": tool or "unknown",
+            "start": start or "",
+            "end": end or "",
+            "session_dir": str(session_dir),
+            "source_jsonl": str(source_jsonl),
+        }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     return digest[:16]
 
@@ -4103,6 +4390,9 @@ def _generate_and_append_changelog_entry(
         start=start,
         end=end,
     )
+    source_metadata = {"kind": "native_session", "identity": source_identity}
+    if (tool or "").strip().lower() == "hermes":
+        source_metadata["provenance"] = _hermes_artifact_provenance(Path(source_jsonl))
 
     try:
         module_override = sys.modules.get("ai_code_sessions")
@@ -4289,10 +4579,7 @@ def _generate_and_append_changelog_entry(
                 "source_jsonl": str(Path(source_jsonl).expanduser().resolve()),
                 "source_match_json": source_match_value,
             },
-            "source": {
-                "kind": "native_session",
-                "identity": source_identity,
-            },
+            "source": source_metadata,
             "summary": _sanitize_changelog_text(summary.strip()),
             "bullets": [_sanitize_changelog_text(str(b).strip()) for b in bullets if str(b).strip()][:12],
             "tags": [str(t).strip() for t in tags if str(t).strip()][:24],
@@ -5149,7 +5436,438 @@ def _native_session_overlaps_window(
 
 def _native_session_prompt_summary(source_jsonl: Path) -> str:
     summary = get_session_summary(source_jsonl)
-    return summary if summary and summary != "(no summary)" else ""
+    if summary and summary != "(no summary)":
+        return summary
+    if not _looks_like_hermes_session_jsonl(_peek_first_jsonl_object(source_jsonl)):
+        return ""
+    try:
+        parsed = parse_session_file(source_jsonl)
+    except (OSError, ValueError):
+        return ""
+    for entry in parsed.get("loglines", []):
+        if not isinstance(entry, dict) or entry.get("type") != "user":
+            continue
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        text = extract_text_from_content(message.get("content"))
+        if text:
+            return text[:197] + "..." if len(text) > 200 else text
+    return ""
+
+
+_HERMES_ARTIFACT_ROOT_KEY = "_ai_code_sessions_logical_root_id"
+_HERMES_ARTIFACT_PROVENANCE_KEY = "_ai_code_sessions_provenance"
+
+
+def _hermes_exports_dir() -> Path:
+    override = os.environ.get("CTX_HERMES_EXPORTS_DIR")
+    if override and override.strip():
+        return Path(override).expanduser().resolve()
+    return _global_config_path().parent / "hermes-exports"
+
+
+def _store_hermes_evidence(*, raw: bytes, subdirectory: str) -> Path:
+    digest = hashlib.sha256(raw).hexdigest()
+    export_directory = _hermes_exports_dir()
+    directory = export_directory / subdirectory
+    destination = directory / f"{digest}.jsonl"
+    try:
+        export_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{digest}.", suffix=".tmp", dir=directory)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                if destination.read_bytes() != raw:
+                    raise ValueError(f"Hermes evidence digest collision at {destination}") from None
+        finally:
+            temporary.unlink()
+    except ValueError:
+        raise
+    except OSError as error:
+        raise ValueError(f"Could not preserve Hermes export evidence at {destination}: {error}") from None
+    return destination.resolve()
+
+
+def _hermes_run_export(*, profile: str, session_id: str | None = None) -> bytes:
+    executable = os.environ.get("CTX_HERMES_CMD", "").strip() or "hermes"
+    command = [str(Path(executable).expanduser()), "--profile", profile, "sessions", "export"]
+    command.extend(("--format", "jsonl", "--redact", "--yes"))
+    if session_id is not None:
+        command.extend(("--session-id", session_id))
+    command.append("-")
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise ValueError(f"Could not run Hermes native export using {executable!r}: {error}") from None
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or b"").decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"Hermes native export failed with exit status {result.returncode}{suffix}")
+    return result.stdout or b""
+
+
+def _hermes_records_from_bytes(raw: bytes, *, skip_unidentified_profiles: bool = False) -> list[dict]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Hermes export is not valid UTF-8: {error}") from None
+    records = []
+    for line_number, line in enumerate(text.split("\n"), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Malformed Hermes JSONL on line {line_number}: {error.msg}") from None
+        if not isinstance(record, dict) or not isinstance(record.get("messages"), list):
+            raise ValueError(f"Hermes export line {line_number} is not a native session object")
+        session_id = record.get("id")
+        profile_name = record.get("profile_name")
+        source = record.get("source")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError(f"Hermes export line {line_number} is missing a usable session id")
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(f"Hermes export line {line_number} is missing a session source")
+        parent_id = record.get("parent_session_id")
+        if parent_id is not None and (not isinstance(parent_id, str) or not parent_id.strip()):
+            raise ValueError(f"Hermes session {session_id!r} has an unparseable parent id")
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            if skip_unidentified_profiles and (profile_name is None or isinstance(profile_name, str)):
+                continue
+            raise ValueError(f"Hermes export line {line_number} is missing a runtime profile name")
+        records.append(record)
+    return records
+
+
+def _read_hermes_export(source_jsonl: Path) -> tuple[bytes, list[dict]]:
+    path = Path(source_jsonl).expanduser()
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"Could not read Hermes export {path}: {error}") from None
+    return raw, _hermes_records_from_bytes(raw)
+
+
+def _hermes_model_config(session: dict) -> dict:
+    value = session.get("model_config")
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Hermes session {session.get('id')!r} has unparseable model_config")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Hermes session {session.get('id')!r} has malformed model_config JSON") from None
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Hermes session {session.get('id')!r} model_config is not an object")
+    return parsed
+
+
+def _hermes_parent_id(session: dict) -> str | None:
+    value = session.get("parent_session_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _hermes_is_compression_child(child: dict, parent: dict) -> bool:
+    if parent.get("end_reason") != "compression" or child.get("source") == "tool":
+        return False
+    markers = _hermes_model_config(child)
+    parent_id = parent.get("id")
+    return not any(markers.get(key) == parent_id for key in ("_branched_from", "_reset_from", "_delegate_from"))
+
+
+def _hermes_group_records(records: list[dict]) -> list[tuple[dict, list[dict]]]:
+    sessions: dict[tuple[str, str], dict] = {}
+    ordered: list[dict] = []
+    for record in records:
+        profile_name = record["profile_name"]
+        session_id = record["id"]
+        key = (profile_name, session_id)
+        previous = sessions.get(key)
+        if previous is not None:
+            if json.dumps(previous, sort_keys=True, ensure_ascii=False) != json.dumps(
+                record, sort_keys=True, ensure_ascii=False
+            ):
+                raise ValueError(f"Conflicting Hermes records for session {session_id!r}")
+            continue
+        sessions[key] = record
+        ordered.append(record)
+
+    for record in ordered:
+        parent_id = _hermes_parent_id(record)
+        if parent_id is None:
+            continue
+        parent_key = (record["profile_name"], parent_id)
+        if parent_key not in sessions:
+            other_profile = next((profile for profile, session_id in sessions if session_id == parent_id), None)
+            if other_profile is not None:
+                raise ValueError(
+                    f"Hermes session {record['id']!r} ancestry crosses runtime profiles "
+                    f"({record['profile_name']!r} to {other_profile!r})"
+                )
+            raise ValueError(f"Hermes session {record['id']!r} is missing ancestor {parent_id!r}")
+
+    states: dict[tuple[str, str], int] = {}
+    lineage: dict[tuple[str, str], tuple[str, bool, int]] = {}
+
+    def classify(key: tuple[str, str]) -> tuple[str, bool, int]:
+        state = states.get(key, 0)
+        if state == 1:
+            raise ValueError(f"Hermes session ancestry contains a cycle at {key[1]!r}")
+        if state == 2:
+            return lineage[key]
+        states[key] = 1
+        record = sessions[key]
+        parent_id = _hermes_parent_id(record)
+        parent = sessions[(record["profile_name"], parent_id)] if parent_id else None
+        if parent is None:
+            root_id, inherited_exclusion, depth = record["id"], False, 0
+        else:
+            parent_root, parent_excluded, parent_depth = classify((record["profile_name"], parent_id))
+            is_compression = _hermes_is_compression_child(record, parent)
+            root_id = parent_root if is_compression else record["id"]
+            depth = parent_depth + 1 if is_compression else 0
+            inherited_exclusion = parent_excluded
+        config = _hermes_model_config(record)
+        excluded = (
+            inherited_exclusion
+            or bool(record.get("hidden"))
+            or record.get("source") == "tool"
+            or bool(config.get("_delegate_from"))
+        )
+        result = (root_id, excluded, depth)
+        states[key] = 2
+        lineage[key] = result
+        return result
+
+    for record in ordered:
+        classify((record["profile_name"], record["id"]))
+
+    groups: dict[tuple[str, str], list[tuple[int, int, dict]]] = {}
+    positions = {(record["profile_name"], record["id"]): index for index, record in enumerate(ordered)}
+    for record in ordered:
+        key = (record["profile_name"], record["id"])
+        root_id, excluded, depth = lineage[key]
+        if not excluded:
+            groups.setdefault((record["profile_name"], root_id), []).append((depth, positions[key], record))
+
+    result = []
+    for (profile_name, root_id), members in groups.items():
+        members.sort(key=lambda item: (item[0], item[1]))
+        root = sessions[(profile_name, root_id)]
+        chain = [record for _, _, record in members]
+        parent = root
+        for child in chain[1:]:
+            if _hermes_parent_id(child) != parent["id"]:
+                raise ValueError(f"Hermes session {root_id!r} has ambiguous compression ancestry")
+            parent = child
+        result.append((root, chain))
+    return result
+
+
+def _hermes_datetime(value: object) -> datetime | None:
+    timestamp = _hermes_timestamp(value)
+    return _parse_iso8601(timestamp) if timestamp else None
+
+
+def _hermes_session_window(sessions: list[dict]) -> tuple[datetime | None, datetime | None]:
+    timestamps = []
+    for session in sessions:
+        start = _hermes_datetime(session.get("started_at"))
+        end = _hermes_datetime(session.get("ended_at"))
+        if start is not None:
+            timestamps.append(start)
+        if end is not None:
+            timestamps.append(end)
+        for message in session.get("messages", []):
+            if not isinstance(message, dict) or message.get("role") not in {"user", "assistant", "tool"}:
+                continue
+            if (
+                message.get("hidden")
+                or message.get("is_hidden")
+                or message.get("display_kind") in {"hidden", "system", "session_meta"}
+            ):
+                continue
+            compacted = bool(message.get("compacted"))
+            if not message.get("active") and not compacted:
+                continue
+            timestamp = _hermes_datetime(message.get("timestamp"))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+    return (min(timestamps), max(timestamps)) if timestamps else (None, None)
+
+
+def _hermes_logical_identity_from_source(source_jsonl: Path) -> tuple[str, str]:
+    _, records = _read_hermes_export(source_jsonl)
+    if not records:
+        raise ValueError("Hermes logical artifact contains no session records")
+    root = records[0]
+    profile_name = root.get("profile_name")
+    root_id = root.get("id")
+    provenance = root.get(_HERMES_ARTIFACT_PROVENANCE_KEY)
+    if root.get(_HERMES_ARTIFACT_ROOT_KEY) != root_id or not isinstance(provenance, dict):
+        raise ValueError("Hermes source is not a self-describing logical-root artifact")
+    if (
+        not isinstance(profile_name, str)
+        or not profile_name.strip()
+        or not isinstance(root_id, str)
+        or not root_id.strip()
+    ):
+        raise ValueError("Hermes logical artifact has an unparseable root identity")
+    if provenance.get("profile_name") != profile_name:
+        raise ValueError("Hermes logical artifact profile provenance does not match its root")
+    transport_profile = provenance.get("transport_profile")
+    transport_profiles = provenance.get("transport_profiles")
+    raw_export_paths = provenance.get("raw_export_paths")
+    if transport_profile is not None and (not isinstance(transport_profile, str) or not transport_profile.strip()):
+        raise ValueError("Hermes logical artifact has invalid transport-profile provenance")
+    if not isinstance(transport_profiles, list) or not all(
+        isinstance(value, str) and value.strip() for value in transport_profiles
+    ):
+        raise ValueError("Hermes logical artifact has invalid transport-profile history")
+    if (
+        not isinstance(raw_export_paths, list)
+        or not raw_export_paths
+        or not all(isinstance(value, str) and value.strip() for value in raw_export_paths)
+    ):
+        raise ValueError("Hermes logical artifact has invalid raw-export provenance")
+    expected_ids = provenance.get("physical_session_ids")
+    actual_ids = [record["id"] for record in records]
+    if expected_ids != actual_ids:
+        raise ValueError("Hermes logical artifact physical-session provenance does not match its records")
+    parent = root
+    for record in records[1:]:
+        if _hermes_parent_id(record) != parent["id"]:
+            raise ValueError(f"Hermes logical artifact has ambiguous compression ancestry at {record['id']!r}")
+        if not _hermes_is_compression_child(record, parent):
+            raise ValueError(f"Hermes logical artifact has an invalid continuation at {record['id']!r}")
+        parent = record
+    return profile_name, root_id
+
+
+def _hermes_artifact_provenance(source_jsonl: Path) -> dict:
+    _hermes_logical_identity_from_source(source_jsonl)
+    _, records = _read_hermes_export(source_jsonl)
+    return dict(records[0][_HERMES_ARTIFACT_PROVENANCE_KEY])
+
+
+def _write_hermes_logical_artifact(
+    *, root: dict, sessions: list[dict], raw_export_paths: list[Path]
+) -> tuple[Path, dict]:
+    profile_name = root["profile_name"]
+    physical_ids = [session["id"] for session in sessions]
+    transport_profiles = sorted(
+        {
+            session["transport_profile"]
+            for session in sessions
+            if isinstance(session.get("transport_profile"), str) and session["transport_profile"].strip()
+        }
+    )
+    provenance = {
+        "transport_profile": (
+            root.get("transport_profile")
+            if isinstance(root.get("transport_profile"), str) and root["transport_profile"].strip()
+            else None
+        ),
+        "profile_name": profile_name,
+        "physical_session_ids": physical_ids,
+        "transport_profiles": transport_profiles,
+        "raw_export_paths": sorted({str(Path(path).expanduser().resolve()) for path in raw_export_paths}),
+    }
+    artifact_records = [dict(session) for session in sessions]
+    artifact_records[0][_HERMES_ARTIFACT_ROOT_KEY] = root["id"]
+    artifact_records[0][_HERMES_ARTIFACT_PROVENANCE_KEY] = provenance
+    raw = "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in artifact_records).encode(
+        "utf-8"
+    )
+    return _store_hermes_evidence(raw=raw, subdirectory="logical"), provenance
+
+
+def _hermes_candidates_from_records(records: list[dict], raw_export_paths: list[Path]) -> list[dict]:
+    candidates = []
+    for root, sessions in _hermes_group_records(records):
+        source_jsonl, provenance = _write_hermes_logical_artifact(
+            root=root,
+            sessions=sessions,
+            raw_export_paths=raw_export_paths,
+        )
+        start_dt, end_dt = _hermes_session_window(sessions)
+        if start_dt is None or end_dt is None:
+            raise ValueError(f"Hermes logical session {root['id']!r} has no usable timestamps")
+        start = start_dt.astimezone(timezone.utc).isoformat()
+        end = end_dt.astimezone(timezone.utc).isoformat()
+        title = root.get("title")
+        title = title.strip() if isinstance(title, str) and title.strip() else ""
+        prompt_summary = title or _native_session_prompt_summary(source_jsonl)
+        identity = _canonical_session_identity_for_source(
+            tool="hermes",
+            source_jsonl=source_jsonl,
+            start=start,
+            end=end,
+            profile_name=root["profile_name"],
+            logical_root_session_id=root["id"],
+        )
+        candidates.append(
+            {
+                "tool": "hermes",
+                "source_jsonl": str(source_jsonl),
+                "start": start,
+                "end": end,
+                "session_id": root["id"],
+                "profile_name": root["profile_name"],
+                "transport_profile": root.get("transport_profile"),
+                "physical_session_ids": list(provenance["physical_session_ids"]),
+                "raw_export_paths": list(provenance["raw_export_paths"]),
+                "cwd": root.get("cwd"),
+                "git_repo_root": root.get("git_repo_root"),
+                "hermes_project_evidence": [
+                    {
+                        "session_id": session["id"],
+                        "cwd": session.get("cwd"),
+                        "git_repo_root": session.get("git_repo_root"),
+                    }
+                    for session in sessions
+                ],
+                "title": title or prompt_summary,
+                "prompt_summary": prompt_summary,
+                "project_hints": [],
+                "source": {
+                    "kind": "native_session",
+                    "identity": identity,
+                    "provenance": provenance,
+                },
+            }
+        )
+    return candidates
+
+
+def _hermes_candidates_from_export(source_jsonl: Path, *, profile: str | None = None) -> list[dict]:
+    """Split a native Hermes JSONL export into validated logical-session candidates."""
+    source_path = Path(source_jsonl).expanduser()
+    try:
+        raw = source_path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"Could not read Hermes export {source_path}: {error}") from None
+    records = _hermes_records_from_bytes(raw)
+    if not records:
+        raise ValueError("Hermes export contains no session records")
+    if profile is not None:
+        if not isinstance(profile, str) or not profile.strip():
+            raise ValueError("Hermes runtime profile must be a non-empty name")
+        mismatched = sorted({record["profile_name"] for record in records if record["profile_name"] != profile})
+        if mismatched:
+            raise ValueError(
+                f"Hermes export profile mismatch: expected runtime profile {profile!r}, "
+                f"found {', '.join(repr(name) for name in mismatched)}"
+            )
+    raw_path = _store_hermes_evidence(raw=raw, subdirectory="raw")
+    return _hermes_candidates_from_records(records, [raw_path])
 
 
 _CODEX_TOOL_PATH_HINT_RE = re.compile(r"(?<![\w:/])(?:~(?:/[^\s\"'`|;&<>$)]+)?|/[^\s\"'`|;&<>$)]+)")
@@ -5293,6 +6011,8 @@ def _native_session_candidate_from_source(*, tool: str, source_jsonl: Path) -> d
     """
     normalized_tool = (tool or "").strip().lower()
     source_path = Path(source_jsonl).expanduser().resolve()
+    if normalized_tool == "hermes":
+        raise ValueError("Hermes exports require _hermes_candidates_from_export")
 
     try:
         first = _peek_first_jsonl_object(source_path)
@@ -5302,7 +6022,11 @@ def _native_session_candidate_from_source(*, tool: str, source_jsonl: Path) -> d
                 raise ValueError("not a codex session log")
             start_dt, end_dt, cwd, session_id = _codex_rollout_session_times(source_path)
         elif normalized_tool == "claude":
-            if _looks_like_codex_rollout_jsonl(first) or _looks_like_omp_session_jsonl(first):
+            if (
+                _looks_like_codex_rollout_jsonl(first)
+                or _looks_like_omp_session_jsonl(first)
+                or _looks_like_hermes_session_jsonl(first)
+            ):
                 raise ValueError("not a claude session log")
             start_dt, end_dt, cwd, session_id = _claude_session_times(source_path)
         elif normalized_tool == "omp":
@@ -5484,13 +6208,86 @@ def _discover_native_omp_sessions(*, since: datetime, until: datetime) -> list[d
     return candidates
 
 
-def _discover_native_sessions(*, tools: tuple[str, ...], since: datetime, until: datetime) -> list[dict]:
+def _discover_native_hermes_sessions(*, since: datetime, until: datetime, profile: str) -> list[dict]:
+    # Hermes bulk time filters exclude active sessions; apply the window locally.
+    raw = _hermes_run_export(profile=profile)
+    raw_paths = [_store_hermes_evidence(raw=raw, subdirectory="raw")]
+    exported = _hermes_records_from_bytes(raw, skip_unidentified_profiles=True)
+    records = [record for record in exported if record["profile_name"] == profile]
+    if not records:
+        return []
+
+    by_id = {record["id"]: record for record in records}
+    # Select potentially overlapping families before fetching missing ancestry.
+    # Keep all known relatives so a window cannot truncate a compression chain.
+    children: dict[str, list[str]] = {}
+    pending = []
+    for record in records:
+        parent_id = _hermes_parent_id(record)
+        if parent_id is not None:
+            children.setdefault(parent_id, []).append(record["id"])
+        _, end_dt = _hermes_session_window([record])
+        if end_dt is None or end_dt >= since:
+            pending.append(record["id"])
+    selected = set()
+    while pending:
+        session_id = pending.pop()
+        if session_id in selected:
+            continue
+        selected.add(session_id)
+        record = by_id.get(session_id)
+        parent_id = _hermes_parent_id(record) if record is not None else None
+        if parent_id is not None:
+            pending.append(parent_id)
+        pending.extend(children.get(session_id, ()))
+    records = [record for record in records if record["id"] in selected]
+    by_id = {record["id"]: record for record in records}
+
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        parent_id = _hermes_parent_id(record)
+        if parent_id is None or parent_id in by_id:
+            continue
+        parent_raw = _hermes_run_export(profile=profile, session_id=parent_id)
+        parent_path = _store_hermes_evidence(raw=parent_raw, subdirectory="raw")
+        raw_paths.append(parent_path)
+        parent_export = _hermes_records_from_bytes(parent_raw)
+        matches = [item for item in parent_export if item["id"] == parent_id]
+        if not matches:
+            raise ValueError(f"Hermes export did not return required ancestor {parent_id!r}")
+        if any(item["profile_name"] != profile for item in matches):
+            raise ValueError(f"Hermes ancestor {parent_id!r} belongs to a different runtime profile")
+        for parent in matches:
+            records.append(parent)
+            by_id[parent["id"]] = parent
+
+    candidates = _hermes_candidates_from_records(records, raw_paths)
+    candidates = [
+        candidate
+        for candidate in candidates
+        if _native_session_overlaps_window(
+            start_dt=_parse_iso8601(candidate["start"]),
+            end_dt=_parse_iso8601(candidate["end"]),
+            since=since,
+            until=until,
+        )
+    ]
+    return candidates
+
+
+def _discover_native_sessions(
+    *, tools: tuple[str, ...], since: datetime, until: datetime, hermes_profile: str = "default"
+) -> list[dict]:
     since, until = _normalized_native_session_window(since=since, until=until)
     requested_tools = []
     for tool in tools:
         normalized = (tool or "").strip().lower()
-        if normalized in {"codex", "claude", "omp"} and normalized not in requested_tools:
+        if normalized in {"codex", "claude", "omp", "hermes"} and normalized not in requested_tools:
             requested_tools.append(normalized)
+    if "hermes" in requested_tools and (not isinstance(hermes_profile, str) or not hermes_profile.strip()):
+        raise ValueError("Hermes runtime profile must be a non-empty name")
 
     candidates: list[dict] = []
     if "codex" in requested_tools:
@@ -5499,6 +6296,8 @@ def _discover_native_sessions(*, tools: tuple[str, ...], since: datetime, until:
         candidates.extend(_discover_native_claude_sessions(since=since, until=until))
     if "omp" in requested_tools:
         candidates.extend(_discover_native_omp_sessions(since=since, until=until))
+    if "hermes" in requested_tools:
+        candidates.extend(_discover_native_hermes_sessions(since=since, until=until, profile=hermes_profile))
 
     candidates.sort(
         key=lambda candidate: _parse_iso8601(candidate["end"]) or datetime.min.replace(tzinfo=timezone.utc),
@@ -5579,8 +6378,122 @@ def _project_hint_to_git_toplevel(hint: dict) -> str | None:
     return _git_toplevel_from_path_hint(value)
 
 
+def _hermes_native_repo_root(value: object, *, exact: bool = False) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        return None
+    path = path.resolve()
+    root = _git_toplevel(path)
+    if root is None or (exact and root.resolve() != path):
+        return None
+    return str(root.resolve())
+
+
+def _resolve_hermes_session_project(candidate: dict) -> dict:
+    raw_cwd = candidate.get("cwd")
+    raw_git_repo_root = candidate.get("git_repo_root")
+    binding = candidate.get("hermes_project_root")
+    raw_project_evidence = candidate.get("hermes_project_evidence")
+    project_evidence = (
+        [item for item in raw_project_evidence if isinstance(item, dict)]
+        if isinstance(raw_project_evidence, list)
+        else [{"cwd": raw_cwd, "git_repo_root": raw_git_repo_root}]
+    )
+    native_metadata_absent = (
+        raw_cwd is None
+        and raw_git_repo_root is None
+        and all(item.get("cwd") is None and item.get("git_repo_root") is None for item in project_evidence)
+    )
+    cwd_root = _hermes_native_repo_root(raw_cwd)
+    git_repo_root = _hermes_native_repo_root(raw_git_repo_root, exact=True)
+    unresolved_recorded_root = raw_git_repo_root is not None and git_repo_root is None
+    native_roots = []
+    for root in (cwd_root, git_repo_root):
+        if root is not None and root not in native_roots:
+            native_roots.append(root)
+    for item in project_evidence:
+        if item.get("cwd") == raw_cwd and item.get("git_repo_root") == raw_git_repo_root:
+            continue
+        for key in ("cwd", "git_repo_root"):
+            value = item.get(key)
+            root = _hermes_native_repo_root(value, exact=key == "git_repo_root")
+            if key == "git_repo_root" and value is not None and root is None:
+                unresolved_recorded_root = True
+            if root is not None and root not in native_roots:
+                native_roots.append(root)
+
+    conflicts = []
+    if unresolved_recorded_root:
+        conflicts.append("Recorded Hermes git_repo_root is not an available Git toplevel")
+    if len(native_roots) > 1:
+        conflicts.append("Hermes cwd and git_repo_root metadata resolve to different Git toplevels")
+    plausible_project_roots = list(native_roots)
+    binding_root = _git_toplevel_from_path_hint(str(binding)) if binding is not None else None
+    if binding is not None:
+        if binding_root is None:
+            conflicts.append("Explicit Hermes project binding does not resolve to a Git toplevel")
+        elif native_metadata_absent:
+            if binding_root not in plausible_project_roots:
+                plausible_project_roots.append(binding_root)
+        elif binding_root not in native_roots:
+            conflicts.append("Hermes project binding cannot override recorded cwd/git_repo_root evidence")
+    if len(plausible_project_roots) > 1:
+        conflicts.append("Multiple plausible Git toplevels were derived from Hermes session evidence")
+
+    evidence = {
+        "tool": "hermes",
+        "source_jsonl": str(Path(candidate["source_jsonl"]).expanduser().resolve())
+        if isinstance(candidate.get("source_jsonl"), (str, Path))
+        else None,
+        "session_id": candidate.get("session_id"),
+        "profile_name": candidate.get("profile_name"),
+        "start": _canonicalize_iso8601_utc(candidate.get("start"))
+        if isinstance(candidate.get("start"), str)
+        else candidate.get("start"),
+        "end": _canonicalize_iso8601_utc(candidate.get("end"))
+        if isinstance(candidate.get("end"), str)
+        else candidate.get("end"),
+        "cwd": raw_cwd,
+        "git_repo_root": raw_git_repo_root,
+        "cwd_git_toplevel": cwd_root,
+        "recorded_git_repo_toplevel": git_repo_root,
+        "hermes_project_root": binding,
+        "hermes_project_evidence": project_evidence,
+        "plausible_project_roots": plausible_project_roots,
+        "conflicts": conflicts,
+    }
+    if len(plausible_project_roots) == 1 and not conflicts:
+        return {
+            "project_root": plausible_project_roots[0],
+            "confidence": "high",
+            "reason": (
+                "Explicit Hermes profile binding for absent native project metadata"
+                if native_metadata_absent and binding_root is not None
+                else "Hermes native project evidence resolves to one Git toplevel"
+            ),
+            "evidence": evidence,
+        }
+    if conflicts:
+        return {
+            "project_root": None,
+            "confidence": "low",
+            "reason": "Conflicting Hermes project evidence; refusing to select a repo",
+            "evidence": evidence,
+        }
+    return {
+        "project_root": None,
+        "confidence": "low",
+        "reason": "No trustworthy Hermes project evidence found",
+        "evidence": evidence,
+    }
+
+
 def _resolve_native_session_project(candidate: dict) -> dict:
     tool = (candidate.get("tool") or "").strip().lower() if isinstance(candidate, dict) else ""
+    if tool == "hermes":
+        return _resolve_hermes_session_project(candidate)
     source_jsonl = candidate.get("source_jsonl") if isinstance(candidate, dict) else None
     session_id = candidate.get("session_id") if isinstance(candidate, dict) else None
     start = candidate.get("start") if isinstance(candidate, dict) else None
@@ -6797,6 +7710,8 @@ def generate_index_pagination_html(total_pages):
 def _tool_display_name_from_source_format(source_format: str) -> str:
     if source_format == "codex_rollout":
         return "Codex"
+    if source_format == "hermes_jsonl":
+        return "Hermes"
     return "Claude Code"
 
 

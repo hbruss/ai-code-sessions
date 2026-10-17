@@ -19,6 +19,7 @@ The CLI can process logs from:
 - **Codex CLI** — `~/.codex/sessions/**/rollout-*.jsonl` (or `$CODEX_HOME/sessions/...` if `CODEX_HOME` is set)
 - **Claude Code** — `~/.claude/projects/**/<uuid>.jsonl`
 - **OMP** — `~/.omp/agent/sessions/<encoded-project>/*.jsonl` (or `CTX_OMP_SESSIONS_DIR/*/*.jsonl` if set)
+- **Hermes** — native `hermes sessions export --format jsonl` session objects; select with `--hermes` or import a retained export with `--source-jsonl`
 - **Claude Web Export** — JSON files exported from claude.ai
 
 ---
@@ -468,7 +469,7 @@ ais changelog backfill --limit 5 --max-concurrency 1
 
 ### `ais changelog sync`
 
-Sync recent native Codex, Claude, and OMP sessions into per-repo changelog entries.
+Sync native Codex, Claude, OMP, and opt-in Hermes sessions into per-repo changelog entries.
 
 This is the primary changelog workflow. By default it scans the last 48 hours, including long-running native sessions that started earlier but overlap the scan window. It writes only when repo targeting is trustworthy, prompts you on medium-confidence matches, reports ambiguous sessions as unresolved in non-interactive runs, and skips low-confidence sessions instead of guessing.
 
@@ -491,18 +492,27 @@ ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-proj
 | `--codex` | Sync native Codex sessions only |
 | `--claude` | Sync native Claude sessions only |
 | `--omp` | Sync native OMP sessions only |
-| `--all` | Sync all supported tools (default) |
+| `--all` | Sync Codex, Claude, and OMP (default); combine with `--hermes` to include Hermes |
+| `--hermes` | Export and sync native Hermes sessions; may be combined with other source flags |
+| `--hermes-profile NAME` | Select/filter the Hermes runtime profile (native discovery defaults to `default`); requires `--hermes` |
+| `--hermes-project-root PATH` | Explicit repo binding only for absent native project metadata; requires `--hermes-profile` and a real Git repo |
 | `--since TEXT` | Start of the scan window (defaults to 48 hours before `--until`/now) |
-| `--source-jsonl PATH` | Sync exactly one native JSONL file; requires exactly one of `--codex`, `--claude`, or `--omp` |
+| `--source-jsonl PATH` | Sync a native JSONL file; requires exactly one source flag (`--codex`, `--claude`, `--omp`, or `--hermes`), and cannot combine with time-window flags. Hermes exports may contain several logical sessions |
 | `--until TEXT` | End of the scan window (defaults to now) |
-| `--limit INTEGER` | Maximum number of discovered sessions to consider (when `--project-root` is set, the limit applies after repo filtering) |
+| `--limit INTEGER` | Maximum number of native sessions to consider, including explicit exports (when `--project-root` is set, the limit applies after repo filtering) |
 | `--project-root TEXT` | Restrict writes to one repo; compatible medium-confidence matches use this repo without prompting |
-| `--dry-run` | Show what would be appended without writing |
+| `--dry-run` | Preview changelog changes without writing entries; Hermes source export artifacts may still be materialized |
 | `--actor TEXT` | Override the changelog actor |
-| `--evaluator [codex|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
+| `--evaluator [codex\|claude]` | Changelog evaluator to use (default: explicit flag, then env/config, then `codex`) |
 | `--model TEXT` | Model override for the evaluator (default: explicit flag, then env/config, then tool default) |
 
 Codex sync uses the rollout `cwd` first. If that is broad or outside a repo, Codex tool-call `workdir` values and local paths are treated as medium-confidence repo evidence; explicit `--project-root` can select a matching repo without an interactive prompt.
+
+For Hermes, native project metadata wins; an explicit Hermes binding fills only
+missing metadata and cannot reassign a recorded project. Runtime profile, not
+transport profile, is used for selection and identity. See
+[Hermes native exports](changelog.md#hermes-native-exports) for lineage and
+artifact retention. Evaluator choices remain Codex/Claude.
 
 **Examples:**
 
@@ -513,7 +523,7 @@ ais changelog sync
 # Scan OMP sessions only
 ais changelog sync --omp
 
-# Scan a larger window across all tools
+# Scan a larger window across the three local-file sources
 ais changelog sync --all --since "7 days ago"
 
 # Limit writes to the current repo
@@ -521,6 +531,9 @@ ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)"
 
 # Sync one explicit OMP JSONL file
 ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
+
+# Sync a Hermes profile with an explicit binding for absent repo metadata
+ais changelog sync --hermes --hermes-profile research --hermes-project-root "$PWD" --actor assistant
 
 # Preview before writing
 ais changelog sync --all --dry-run
@@ -551,7 +564,7 @@ ais changelog since <ref>
 | `--format FORMAT` | Output format: `summary` (default), `json`, `bullets`, `table` |
 | `--project-root PATH` | Git repo root (defaults to current repo) |
 | `--actor TEXT` | Filter by actor |
-| `--tool TEXT` | Filter by tool (`codex`, `claude`, or `omp`) |
+| `--tool TEXT` | Filter by tool (`codex`, `claude`, `omp`, or `hermes`) |
 | `--tag TEXT` | Filter by tag (repeatable) |
 
 **Examples:**

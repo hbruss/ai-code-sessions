@@ -29,9 +29,9 @@ I discovered his project through his [blog post](https://simonwillison.net/2025/
 
 What I've added on top:
 
-- **Codex CLI and OMP sync support** (in addition to Claude Code)
+- **Codex CLI, OMP, and Hermes sync support** (in addition to Claude Code)
 - **Automatic source matching** for finding the right log file when running concurrent sessions
-- **A native changelog sync workflow** for processing recent Codex, Claude, and OMP sessions without wrapping them
+- **A native changelog sync workflow** for processing sessions without wrapping them; Hermes uses its native JSONL exporter
 - **An optional `ais ctx` workflow** for naming sessions and organizing transcript exports by project
 - **An append-only changelog system** for generating structured summaries
 - **An interactive onboarding wizard** for workflow setup, readiness checks, and manual skill-install guidance
@@ -180,7 +180,7 @@ ais ctx "Fix the login race condition" --codex
 
 ## The Normal Workflow
 
-`ais changelog sync` is the primary workflow for this tool now. Use Codex, Claude, or OMP normally, then let `ais` scan native session logs that overlap the requested window, resolve the correct repo, append entries for new sessions, and update sync-owned rows when the same live session grows.
+`ais changelog sync` is the primary workflow for this tool now. Use Codex, Claude, OMP, or Hermes normally, then let `ais` resolve the correct repo, append entries for new sessions, and update sync-owned rows as a logical session grows. Default scans and `--all` retain the three local-file sources; add `--hermes` to opt into Hermes's native export command.
 
 By default, changelog evaluation follows the normal precedence: explicit `--evaluator` / `--model`, then `CTX_CHANGELOG_EVALUATOR` / `CTX_CHANGELOG_MODEL` (or the `AI_CODE_SESSIONS_*` equivalents), then config `changelog.evaluator` / `changelog.model`, then tool defaults.
 
@@ -193,11 +193,17 @@ ais changelog sync
 # Sync recent Codex sessions for the current repo only
 ais changelog sync --codex --project-root "$PWD"
 
-# Scan all tools over a larger window
+# Scan the three local-file sources over a larger window
 ais changelog sync --all --since "7 days ago"
 
 # Sync one explicit OMP JSONL file
 ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
+
+# Sync a Hermes runtime profile (requires the Hermes CLI)
+ais changelog sync --hermes --hermes-profile research
+
+# Explicitly bind that profile when its exported project metadata is absent
+ais changelog sync --hermes --hermes-profile research --hermes-project-root "$PWD" --actor assistant
 
 # Preview actions without writing
 ais changelog sync --claude --dry-run
@@ -205,17 +211,20 @@ ais changelog sync --claude --dry-run
 
 ### What It Does
 
-- Discovers native Codex, Claude, and OMP sessions that overlap the scan window
+- Discovers native Codex, Claude, and OMP sessions that overlap the scan window, plus Hermes exports when selected
 - Includes long-running sessions that started earlier but ended or were updated during the window
 - Ignores explicit Codex subagent sessions and OMP sessions marked with `parentSession`
 - Resolves the target git repo from session evidence, including Codex tool-call `workdir` and local path usage
 - Prompts you when multiple repos are plausible
 - Reports ambiguous sessions as unresolved in non-interactive runs
 - Skips low-confidence sessions instead of guessing
+- Keeps Hermes runtime profile and logical compression-root identity separate from transport profile and export path
 - Appends changelog entries only for sessions that are not already recorded
 - Uses the configured changelog evaluator and model unless you override them with `--evaluator` / `--model`
 
 Use [`docs/changelog.md`](docs/changelog.md) for the full changelog workflow and [`docs/cli.md`](docs/cli.md) for the complete flag reference.
+
+Hermes is a source, not a new evaluator: Codex/Claude still generate the summaries. See [Hermes native exports](docs/changelog.md#hermes-native-exports) for explicit-source recovery, project binding, and evidence retention. The same Python package works on macOS and Linux; no Hermes Python dependency or separate Linux codebase is required.
 
 ---
 
@@ -494,7 +503,7 @@ ais export-latest \
 
 ### `ais changelog sync`
 
-Sync recent native Codex, Claude, or OMP sessions into the correct repo changelog.
+Sync native Codex, Claude, OMP, and opt-in Hermes sessions into the correct repo changelog.
 
 ```bash
 ais changelog sync
@@ -502,16 +511,20 @@ ais changelog sync --omp
 ais changelog sync --all --since "7 days ago"
 ais changelog sync --claude --project-root "$(git rev-parse --show-toplevel)" --dry-run
 ais changelog sync --omp --source-jsonl "$HOME/.omp/agent/sessions/-path-to-project/2026-01-02T12-00-00-000Z_abc.jsonl"
+ais changelog sync --hermes --hermes-profile research --hermes-project-root "$PWD"
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--codex`, `--claude`, `--omp`, `--all` | Select which native session stores to scan (`--all` and no flags scan all supported tools) |
+| `--codex`, `--claude`, `--omp`, `--all` | Select local-file sources; `--all` and no flags retain these three sources |
+| `--hermes` | Opt into native Hermes exports; combine with `--all` for all four sources |
+| `--hermes-profile` | Select/filter the runtime profile, not its transport profile |
+| `--hermes-project-root` | Explicit Git repo binding for absent native project metadata; requires an explicit Hermes profile |
 | `--since`, `--until` | Define the scan window (`--since` defaults to 48 hours before `--until`/now; sessions match by overlap) |
-| `--source-jsonl` | Sync exactly one native JSONL file; requires exactly one of `--codex`, `--claude`, or `--omp` |
+| `--source-jsonl` | Sync one native export file; requires exactly one of `--codex`, `--claude`, `--omp`, or `--hermes` |
 | `--limit` | Limit the number of discovered sessions considered |
 | `--project-root` | Restrict writes to one repo; matching medium-confidence sessions do not prompt |
-| `--dry-run` | Show planned appends without writing |
+| `--dry-run` | Preview changelog changes; Hermes source artifacts may still be materialized |
 | `--actor` | Override changelog actor |
 | `--evaluator` | `codex` or `claude` (default: `codex`) |
 | `--model` | Model override for the evaluator |
