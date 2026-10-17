@@ -132,7 +132,9 @@ def _hermes_session(
         "parent_session_id": parent,
         "end_reason": end_reason,
         "model_config": json.dumps(model_config or {}),
-        "messages": list(messages or []),
+        "messages": list(messages)
+        if messages is not None
+        else [_hermes_message(f"{session_id}-prompt", "user", "Review the current implementation.", started_at)],
         "cwd": cwd,
         "git_repo_root": git_repo_root,
         "title": title,

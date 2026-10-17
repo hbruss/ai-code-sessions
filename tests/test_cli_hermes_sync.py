@@ -56,7 +56,8 @@ def _session(
         "end_reason": end_reason,
         "model_config": model_config or {},
         "messages": messages
-        or [
+        if messages is not None
+        else [
             _message(f"{session_id}-user", "user", f"Change for {session_id}.", 1),
             _message(f"{session_id}-assistant", "assistant", f"Completed {session_id}.", 2),
         ],
@@ -738,4 +739,68 @@ def test_hermes_explicit_export_limit_bounds_evaluation_and_entries(tmp_path, mo
     assert result.exit_code == 0, result.output
     entries = _read_entries(repo / ".changelog" / "limit-test" / "entries.jsonl")
     assert [entry["source"]["identity"]["session_id"] for entry in entries] == ["first"]
+    assert len(calls) == 1
+
+
+def test_hermes_empty_lineages_skip_evaluation_but_read_only_continuations_sync(tmp_path, monkeypatch):
+    export_dir = _isolate_hermes_exports(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _mock_git_roots(monkeypatch, repo)
+    calls = _stub_external_evaluator(monkeypatch)
+    metadata_only = _session(
+        "metadata-only",
+        cwd=str(repo),
+        messages=[_message("metadata", "session_meta", "Session setup.", 1)],
+    )
+    empty_root = _session("empty-root", cwd=str(repo), messages=[], end_reason="compression")
+    filtered_only = _session(
+        "filtered-only",
+        cwd=str(repo),
+        messages=[
+            _message("system", "system", "System instructions.", 1),
+            {**_message("hidden", "user", "Hidden scaffolding.", 2), "display_kind": "hidden"},
+            {**_message("undone", "assistant", "Undone response.", 3), "active": 0},
+        ],
+    )
+    source = _write_export(tmp_path / "sessions.jsonl", metadata_only, empty_root, filtered_only)
+    empty_raw = source.read_bytes()
+    args = [
+        "changelog",
+        "sync",
+        "--hermes",
+        "--source-jsonl",
+        str(source),
+        "--actor",
+        "empty-check",
+        "--evaluator",
+        "codex",
+        "--limit",
+        "1",
+    ]
+    runner = CliRunner()
+
+    empty = runner.invoke(cli, args)
+    assert empty.exit_code == 0, empty.output
+    assert calls == []
+    assert not (repo / ".changelog").exists()
+    assert any(path.read_bytes() == empty_raw for path in export_dir.glob("raw/*.jsonl"))
+
+    read_only_child = _session(
+        "read-only-child",
+        cwd=str(repo),
+        parent_session_id="empty-root",
+        started_at=_BASE_TIME + 11,
+        ended_at=_BASE_TIME + 20,
+        messages=[
+            _message("question", "user", "Review the existing design without changing files.", 12),
+            _message("discussion", "assistant", "The current design keeps source and evaluator separate.", 13),
+        ],
+    )
+    _write_export(source, metadata_only, empty_root, filtered_only, read_only_child)
+    result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    entries = _read_entries(repo / ".changelog" / "empty-check" / "entries.jsonl")
+    assert [entry["source"]["identity"]["session_id"] for entry in entries] == ["empty-root"]
+    assert entries[0]["source"]["provenance"]["physical_session_ids"] == ["empty-root", "read-only-child"]
     assert len(calls) == 1

@@ -5802,6 +5802,12 @@ def _hermes_candidates_from_records(records: list[dict], raw_export_paths: list[
             raise ValueError(f"Hermes logical session {root['id']!r} has no usable timestamps")
         start = start_dt.astimezone(timezone.utc).isoformat()
         end = end_dt.astimezone(timezone.utc).isoformat()
+        delta = _build_changelog_digest(source_jsonl=source_jsonl, start=start, end=end)["delta"]
+        if not any(
+            delta[field]
+            for field in ("user_prompts", "assistant_text", "tool_calls", "tool_errors", "tests", "commits")
+        ) and not any(delta["touched_files"].values()):
+            continue
         title = root.get("title")
         title = title.strip() if isinstance(title, str) and title.strip() else ""
         prompt_summary = title or _native_session_prompt_summary(source_jsonl)
