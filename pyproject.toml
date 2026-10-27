@@ -1,6 +1,6 @@
 [project]
 name = "ai-code-sessions"
-version = "0.3.0"
+version = "0.3.1"
 description = "Generate transcripts and changelogs from Codex, Claude Code, OMP, and Hermes sessions"
 readme = "README.md"
 license = "Apache-2.0"
@@ -11,6 +11,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "certifi>=2026.10.19",
     "click",
     "click-default-group",
     "httpx",
