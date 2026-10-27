@@ -107,6 +107,10 @@ ais --version
 ais --help
 ```
 
+AIS requires `certifi>=2026.10.19` to include the
+[eMudhra certificate-trust fixes](https://github.com/certifi/python-certifi/releases/tag/2026.10.19).
+Keep Python and pip patched separately; upgrading AIS does not upgrade either.
+
 ### 2. Run the Onboarding Wizard (Recommended)
 
 ```bash
