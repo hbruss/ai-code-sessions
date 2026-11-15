@@ -204,7 +204,9 @@ uv venv --python 3.15.2 --clear
 uv sync --locked --group dev --python 3.15.2
 ```
 
-For a pipx-installed `ai-code-sessions`, rebuild its isolated environment with the selected interpreter:
+For a pipx-installed `ai-code-sessions`, first check that pipx itself runs. If pipx also fails because its interpreter was removed, repair or reinstall pipx through its original installation method before rebuilding the app environment.
+
+Select an already-installed Python 3.11 or later. This example assumes `python3.15` is on PATH; install it first or substitute the executable path of another supported interpreter. pipx does not download a missing interpreter by default.
 
 ```bash
 pipx reinstall --python python3.15 ai-code-sessions
