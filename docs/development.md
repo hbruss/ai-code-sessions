@@ -6,7 +6,7 @@ This guide covers how to set up a development environment, run tests, and contri
 
 ## Requirements
 
-- **Python** `>=3.11`
+- **Python** `>=3.11` for the package; local development below selects Python `3.15.2` (or `3.15` for the latest available patch).
 - **uv** — Fast Python package manager ([installation](https://docs.astral.sh/uv/getting-started/installation/))
 
 ---
@@ -41,8 +41,8 @@ ai-code-sessions/
 git clone https://github.com/hbruss/ai-code-sessions.git
 cd ai-code-sessions
 
-# Install dependencies (including dev tools)
-uv sync --group dev
+# Create the development environment and install dev dependencies with Python 3.15.2
+uv sync --group dev --python 3.15.2
 ```
 
 ### Running the CLI Locally

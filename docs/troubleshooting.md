@@ -193,6 +193,25 @@ which ai-code-sessions
 source ~/.bashrc  # or ~/.zshrc
 ```
 
+### "`bad interpreter` after a Python upgrade or removal"
+
+**Cause:** A script in a virtual environment can keep pointing at the base Python used to create it. If that interpreter is removed, commands in the environment can fail with `bad interpreter` or a missing-interpreter error.
+
+**Solution:** Recreate the environment with a supported interpreter; do not repair venv shebangs or symlink an interpreter into the old location. From the repository root, rebuild the development environment:
+
+```bash
+uv venv --python 3.15.2 --clear
+uv sync --locked --group dev --python 3.15.2
+```
+
+For a pipx-installed `ai-code-sessions`, rebuild its isolated environment with the selected interpreter:
+
+```bash
+pipx reinstall --python python3.15 ai-code-sessions
+```
+
+pipx shared tooling is separate from an individual app environment and may need its own repair if it was created from the removed Python. Use the repair procedure supported by your pipx version; reinstalling this app does not necessarily repair the shared environment.
+
 ### "Command not found: 'codex'" / "Command not found: 'claude'"
 
 **Cause:** AI tool not installed or not on PATH.
